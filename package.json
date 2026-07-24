@@ -1,0 +1,45 @@
+{
+  "name": "@trdlabs/engine",
+  "version": "0.0.0",
+  "description": "One deterministic execution core (decision → risk → pending order → fill → portfolio → canonical trace) shared by backtester and platform.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=22"
+  },
+  "packageManager": "pnpm@11.6.0",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "gate:determinism": "node scripts/determinism-gate.mjs",
+    "gate:tapes": "tsx scripts/tape-integrity.ts",
+    "release:preflight": "node scripts/assert-version-publishable.mjs",
+    "gate:refresh": "tsx scripts/refresh-expectations.ts",
+    "tapes:build": "tsx scripts/build-tapes.ts"
+  },
+  "dependencies": {
+    "@trdlabs/sdk": "0.13.0",
+    "decimal.js": "10.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "tsx": "^4.23.1",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}
