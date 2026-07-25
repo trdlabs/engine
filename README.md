@@ -14,6 +14,7 @@ they are made.
 | Concern | Owner |
 | --- | --- |
 | Semantics (what a fill *means*) | control-center `docs/architecture/bundle-execution-semantics.md` — 11 owner decisions |
+| Run identity (what a trace's version fields mean) | [`docs/run-identity.md`](docs/run-identity.md) — owner decision (A), 2026-07-25 |
 | Contract vocabulary (`RealityModel` and friends) | `@trdlabs/sdk` |
 | Execution (this repo) | implements exactly what the SSOT says |
 | Orchestration | the hosts: platform, backtester |
@@ -50,10 +51,16 @@ a branch no fixture reaches; the golden-tape test catches an ordering bug no reg
 `wfo/2026-06-09-to-2026-07-20-vps-wfo42d`). Each tape carries its provenance and its content ref;
 `scripts/build-tapes.ts` is the reproducible derivation.
 
-They are marked **`DRAFT`**, deliberately. The initiative card carries an unresolved question —
-*does run identity need its own format version?* — and freezing tapes before it is answered would
-let every future contract bump invalidate every tape. Until the owner decides, the committed
-expectations are a change detector, not a binding parity anchor.
+They are **`FROZEN`** since 2026-07-25, and `test/golden/expected-traces.json` is **binding**. The
+freeze was gated on one question — *does run identity need its own format version?* — which the
+owner resolved with option (A): identity carries its own trace-format version, and the research
+`CONTRACT_VERSION` is a plain hashed field on the host's envelope rather than part of this trace.
+That is what keeps a tape stable across contract bumps. See [`docs/run-identity.md`](docs/run-identity.md).
+
+Consequences worth knowing before you touch a tape: `scripts/build-tapes.ts` refuses to move a
+frozen tape without `--force`, and `scripts/refresh-expectations.ts` refuses to run without it. A
+red `golden-tapes` job means either a bug or an intended semantics change — and an intended one is
+an SSOT edit plus an engine version bump plus a reviewed `--force` refresh, in the same change.
 
 ## What was extracted, and from where
 

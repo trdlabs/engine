@@ -1,8 +1,10 @@
 // Regenerate `test/golden/expected-traces.json` from the committed tapes.
 //
-// Run it deliberately (`pnpm gate:refresh`) and review the diff: a change here is a change in
-// EXECUTION SEMANTICS, which the SSOT says must be a documented decision plus an engine version
-// bump — never a quiet rebase of the expectation file.
+// The expectations are BINDING as of 2026-07-25 (owner decision (A) on run identity unblocked the
+// freeze), so this script refuses to run without `--force`. That is the point: silently regenerating
+// the anchor would turn it into an echo of whatever the code currently does. A refresh belongs in a
+// change that also carries the SSOT edit and the engine version bump explaining why the refs move.
+// See docs/run-identity.md.
 
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -17,6 +19,15 @@ import {
   SMA_CROSS,
   loadGoldenTapes,
 } from '../test/fixtures.js';
+
+if (!process.argv.slice(2).includes('--force')) {
+  console.error(
+    'refresh-expectations: expectations are FROZEN and binding (owner decision (A), 2026-07-25).\n' +
+      '  Re-run with --force only as part of a change that documents why the parity anchor moves.\n' +
+      '  See docs/run-identity.md.',
+  );
+  process.exit(1);
+}
 
 const tapes = loadGoldenTapes();
 const BUNDLES = [
@@ -50,11 +61,13 @@ for (const tape of tapes) {
 }
 
 const payload = {
-  status: 'DRAFT',
+  status: 'FROZEN',
+  frozenOn: '2026-07-25',
   note:
-    'Tapes and their expected traces are DRAFT until the run-identity question on the ' +
-    'control-center card `shared-execution-engine` is decided by the owner. Until then these refs ' +
-    'are a change detector, not a frozen parity anchor.',
+    'BINDING. Owner decision (A) on run identity (2026-07-25) unblocked the freeze: these refs are ' +
+    'the parity anchor, not a change detector. A mismatch is a failure until proven to be an ' +
+    'intended semantics change — which means an SSOT edit, an engine version bump, and a reviewed ' +
+    '`--force` refresh in the same change. See docs/run-identity.md.',
   realityModel: 'standard_no_funding@1 (standard@1 without the funding slot — these tapes carry no funding column)',
   entries,
 };

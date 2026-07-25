@@ -5,10 +5,11 @@
 // content hash recorded in its own header. A tape whose bytes drifted from its recorded ref is a
 // silently-moved parity anchor — exactly the failure mode golden tapes exist to prevent.
 //
-// DRAFT status: tapes derived from the T1/T2 mock-platform VPS fixtures are marked `DRAFT` until
-// the run-identity question in the initiative card is decided by the owner. `DRAFT` is enforced
-// here as a REQUIRED field, not a comment: freezing tapes before identity semantics are settled
-// would make every future contract bump invalidate every tape.
+// FROZEN status: owner decision (A) on run identity (2026-07-25) unblocked the freeze, so `DRAFT`
+// is no longer an accepted state — a tape that is not `FROZEN` is not a parity anchor, and Ф3
+// measures extraction equivalence against these bytes. `frozenOn` / `frozenBy` are required for the
+// same reason provenance is: a freeze without a recorded reason is a claim, not evidence.
+// See docs/run-identity.md.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -20,8 +21,8 @@ import { canonicalJson } from '../src/determinism/canonical-json.js';
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const TAPES = join(ROOT, 'test', 'golden');
 
-const REQUIRED = ['id', 'status', 'provenance', 'symbol', 'timeframe', 'bars'];
-const ALLOWED_STATUS = ['DRAFT', 'FROZEN'];
+const REQUIRED = ['id', 'status', 'frozenOn', 'frozenBy', 'provenance', 'symbol', 'timeframe', 'bars'];
+const ALLOWED_STATUS = ['FROZEN'];
 
 const files = readdirSync(TAPES).filter((f) => f.endsWith('.tape.json')).sort();
 if (files.length === 0) {
@@ -36,7 +37,10 @@ for (const file of files) {
     if (tape[key] === undefined) problems.push(`${file}: missing required field "${key}"`);
   }
   if (tape.status !== undefined && !ALLOWED_STATUS.includes(tape.status)) {
-    problems.push(`${file}: status must be one of ${ALLOWED_STATUS.join('|')} (got "${tape.status}")`);
+    problems.push(
+      `${file}: status must be ${ALLOWED_STATUS.join('|')} (got "${tape.status}") — ` +
+        'tapes were frozen on 2026-07-25 by owner decision (A); see docs/run-identity.md',
+    );
   }
   if (tape.provenance !== undefined) {
     for (const key of ['sourceRepo', 'sourceFixture', 'sourceSymbol', 'extractedRange']) {
@@ -72,7 +76,10 @@ for (const file of files) {
   };
   const ref = contentRef(canonicalJson(body));
   if (tape.contentRef !== ref) {
-    problems.push(`${file}: contentRef drift\n    recorded ${tape.contentRef}\n    actual   ${ref}`);
+    problems.push(
+      `${file}: contentRef drift on a FROZEN tape — the parity anchor moved\n` +
+        `    recorded ${tape.contentRef}\n    actual   ${ref}`,
+    );
   }
 }
 

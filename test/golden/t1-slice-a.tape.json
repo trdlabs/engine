@@ -1,7 +1,8 @@
 {
   "id": "t1-slice-a",
-  "status": "DRAFT",
-  "draftReason": "Run identity (own evidence/hash format version vs. research CONTRACT_VERSION) is an open question on the control-center card shared-execution-engine. Freezing tapes before it is decided would let every future contract bump invalidate every tape.",
+  "status": "FROZEN",
+  "frozenOn": "2026-07-25",
+  "frozenBy": "Owner decision (A) on run identity, 2026-07-25 — control-center card `shared-execution-engine`, «Open question — does run identity need its own format version?». Identity carries its own trace-format version; the research CONTRACT_VERSION is a plain hashed field on the host envelope, not part of this trace. Frozen bytes: this tape and its expected refs are the parity anchor Ф3 measures against and must not move without an SSOT decision plus an engine version bump.",
   "provenance": {
     "sourceRepo": "trdlabs/mock-platform",
     "sourceFixture": "fixtures/2026-06-22-to-2026-06-28-vps",

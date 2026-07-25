@@ -6,10 +6,15 @@
 // This script is the provenance record. It is NOT run in CI (CI consumes the committed tapes) and
 // it reads mock-platform read-only — the engine never writes to a donor repo.
 //
-// Usage: node scripts/build-tapes.mjs [path-to-mock-platform]
+// The tapes are FROZEN (owner decision (A), 2026-07-25). This script will NOT rewrite a frozen tape
+// whose content would change: a frozen tape's bytes are the parity anchor Ф3 measures against, and
+// moving them silently would make the anchor an echo of whatever the code currently does. Pass
+// `--force` to overwrite deliberately, and expect to justify it in the same change.
+//
+// Usage: tsx scripts/build-tapes.ts [path-to-mock-platform] [--force]
 
 import { gunzipSync } from 'node:zlib';
-import { readFileSync, writeFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -18,7 +23,16 @@ import { canonicalJson } from '../src/determinism/canonical-json.js';
 import type { Bar } from '../src/contract/index.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
-const MOCK = process.argv[2] ?? join(ROOT, '..', 'mock-platform');
+const argv = process.argv.slice(2);
+const FORCE = argv.includes('--force');
+const MOCK = argv.find((a) => !a.startsWith('--')) ?? join(ROOT, '..', 'mock-platform');
+
+const FROZEN_BY =
+  'Owner decision (A) on run identity, 2026-07-25 — control-center card `shared-execution-engine`, ' +
+  '«Open question — does run identity need its own format version?». Identity carries its own ' +
+  'trace-format version; the research CONTRACT_VERSION is a plain hashed field on the host ' +
+  'envelope, not part of this trace. Frozen bytes: this tape and its expected refs are the parity ' +
+  'anchor Ф3 measures against and must not move without an SSOT decision plus an engine version bump.';
 
 /** Slices to extract. Kept small on purpose: a golden tape is evidence, not a dataset. */
 const SLICES = [
@@ -91,12 +105,9 @@ for (const slice of SLICES) {
 
   const tape = {
     id: slice.id,
-    // DRAFT until the run-identity question in the initiative card is decided by the owner.
-    status: 'DRAFT',
-    draftReason:
-      'Run identity (own evidence/hash format version vs. research CONTRACT_VERSION) is an open ' +
-      'question on the control-center card shared-execution-engine. Freezing tapes before it is ' +
-      'decided would let every future contract bump invalidate every tape.',
+    status: 'FROZEN',
+    frozenOn: '2026-07-25',
+    frozenBy: FROZEN_BY,
     provenance: {
       sourceRepo: 'trdlabs/mock-platform',
       sourceFixture: slice.fixture,
@@ -110,6 +121,20 @@ for (const slice of SLICES) {
   };
 
   const out = join(ROOT, 'test', 'golden', `${slice.id}.tape.json`);
+
+  // A frozen tape may be regenerated only if it comes out byte-identical. Anything else needs an
+  // explicit, reviewable `--force`.
+  if (existsSync(out) && !FORCE) {
+    const current = JSON.parse(readFileSync(out, 'utf8')) as { status?: string; contentRef?: string };
+    if (current.status === 'FROZEN' && current.contentRef !== ref) {
+      throw new Error(
+        `build-tapes: refusing to move FROZEN tape ${slice.id}\n` +
+          `  frozen  ${current.contentRef}\n  rebuilt ${ref}\n` +
+          '  A frozen tape is the parity anchor (docs/run-identity.md). Re-run with --force only as ' +
+          'part of a change that says why the anchor moves.',
+      );
+    }
+  }
   writeFileSync(out, `${JSON.stringify(tape, null, 2)}\n`);
   console.log(`wrote ${out}  symbol=${symbol} tf=${timeframe} bars=${bars.length}`);
 }

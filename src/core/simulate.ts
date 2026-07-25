@@ -49,10 +49,28 @@ import { detectProtection } from './protection.js';
 import { RiskEngine } from './risk.js';
 import { parseTimeframeMs } from './timeframe.js';
 
-/** Format version of the canonical trace SHAPE. Bumped only when the shape itself changes. */
+/**
+ * Format version of the canonical trace SHAPE — the run-identity format version of owner decision
+ * (A) (2026-07-25, control-center card `shared-execution-engine`). Full statement:
+ * [`docs/run-identity.md`](../../docs/run-identity.md).
+ *
+ * Bump it when, and ONLY when, the shape of the trace changes — a field added, removed, renamed, or
+ * renested. Do NOT bump it for a semantics change that leaves the shape alone: that is
+ * `ENGINE_VERSION`'s job, and conflating the two recreates exactly the problem decision (A) solved
+ * (`017.2 → 017.3` widened the manifest envelope, changed no execution, and still moved every frozen
+ * hash).
+ *
+ * A bump is a migration event: refresh the frozen expectations under `--force` in the same change so
+ * the diff shows which refs moved, and tell the consumers reading traces.
+ *
+ * The research `CONTRACT_VERSION` is deliberately absent from this trace. Under decision (A) the
+ * HOST records it in its own evidence envelope as a plain hashed field, beside the trace rather than
+ * inside it — that is what keeps a golden tape stable across contract bumps. Materializing the host
+ * half lands with Ф3.
+ */
 export const TRACE_FORMAT_VERSION = '1';
 
-/** The engine version stamped into every trace. */
+/** The engine version stamped into every trace: which core executed the run. */
 export const ENGINE_VERSION = '0.0.0';
 
 /** Everything a run binds. */

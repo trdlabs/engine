@@ -13,10 +13,13 @@ import type { RiskProfile, StrategyContext, StrategyDecision, StrategyModule, Ta
 const HERE = fileURLToPath(new URL('.', import.meta.url));
 export const GOLDEN_DIR = join(HERE, 'golden');
 
-/** A committed golden tape, with its provenance header. */
+/** A committed golden tape, with its freeze and provenance header. */
 export interface GoldenTape extends Tape {
   readonly id: string;
-  readonly status: 'DRAFT' | 'FROZEN';
+  /** Frozen since 2026-07-25 (owner decision (A) on run identity). `DRAFT` is no longer valid. */
+  readonly status: 'FROZEN';
+  readonly frozenOn: string;
+  readonly frozenBy: string;
   readonly provenance: Readonly<Record<string, string>>;
   readonly contentRef: string;
 }

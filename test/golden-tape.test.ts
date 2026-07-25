@@ -9,9 +9,11 @@
 //   2. COMMITTED EXPECTATIONS — each run's trace ref is compared against `expected-traces.json`.
 //      Catches a semantics change that is deterministic but WRONG.
 //
-// The tapes are DRAFT (see `expected-traces.json` and each tape header): the run-identity question
-// on the control-center card is unresolved, so these refs are a change detector, not yet a frozen
-// parity anchor. When identity is decided, the tapes flip to FROZEN and the refs become binding.
+// The tapes are FROZEN and the expectations are BINDING as of 2026-07-25: owner decision (A) on run
+// identity (control-center card `shared-execution-engine`) unblocked the freeze. These refs are the
+// parity anchor Ф3 measures extraction equivalence against, not a change detector. A mismatch is a
+// failure until proven to be an intended semantics change — SSOT edit + engine version bump +
+// reviewed `--force` refresh, in one change. See docs/run-identity.md.
 
 import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -45,7 +47,11 @@ interface ExpectedEntry {
   readonly finalEquity: number;
 }
 
-const expected: { readonly status: string; readonly entries: readonly ExpectedEntry[] } = JSON.parse(
+const expected: {
+  readonly status: string;
+  readonly frozenOn: string;
+  readonly entries: readonly ExpectedEntry[];
+} = JSON.parse(
   readFileSync(join(GOLDEN_DIR, 'expected-traces.json'), 'utf8'),
 );
 
@@ -79,7 +85,10 @@ describe('golden tapes', () => {
     for (const tape of tapes) {
       expect(tape.provenance.sourceRepo).toBe('trdlabs/mock-platform');
       expect(['T1', 'T2']).toContain(tape.provenance.sourceTier);
-      expect(tape.status).toBe('DRAFT');
+      expect(tape.status).toBe('FROZEN');
+      expect(tape.frozenOn).toBe('2026-07-25');
+      // A freeze without a recorded reason is a claim, not evidence.
+      expect(tape.frozenBy).toMatch(/run identity/i);
     }
   });
 
@@ -124,8 +133,20 @@ describe('byte-identity: committed expectations', () => {
     expect(actual).toEqual(expected.entries);
   });
 
-  it('the expectation file records that the tapes are still DRAFT', () => {
-    expect(expected.status).toBe('DRAFT');
+  it('the expectation file is frozen and therefore binding', () => {
+    expect(expected.status).toBe('FROZEN');
+    expect(expected.frozenOn).toBe('2026-07-25');
+  });
+
+  it('covers every committed tape × bundle pair — no silent gap in the anchor', () => {
+    expect(expected.entries).toHaveLength(tapes.length * BUNDLES.length);
+    for (const tape of tapes) {
+      for (const bundle of BUNDLES) {
+        expect(
+          expected.entries.some((e) => e.tape === tape.id && e.bundle === bundle.name),
+        ).toBe(true);
+      }
+    }
   });
 });
 
