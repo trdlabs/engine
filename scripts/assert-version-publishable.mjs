@@ -27,6 +27,12 @@ if (pkg.version === '0.0.0') {
 if (pkg.publishConfig?.provenance !== true) {
   problems.push('publishConfig.provenance must be true (OIDC provenance, sdk parity)');
 }
+// npm documents a matching public `repository` as a prerequisite for provenance. Without it the
+// publish still succeeds — it just silently ships no attestation, which is how `0.1.0` went out
+// claiming provenance it did not have.
+if (typeof pkg.repository?.url !== 'string' || !pkg.repository.url.includes('github.com/trdlabs/engine')) {
+  problems.push('repository.url must point at github.com/trdlabs/engine (npm provenance prerequisite)');
+}
 if (pkg.license !== 'Apache-2.0') {
   problems.push(`license must be Apache-2.0 (got "${pkg.license}")`);
 }

@@ -112,9 +112,31 @@ jobs:
         run: pnpm verify:package
 
       - name: Publish to npm (with provenance)
-        run: pnpm publish --access public --no-git-checks
+        # `npm publish`, not `pnpm publish`: pnpm attempts its own OIDC token exchange first, and
+        # when that 404s (no trusted publisher configured) it falls back to the token and silently
+        # SKIPS provenance — which is exactly how 0.1.0 shipped unattested while this step printed
+        # success. The npm CLI generates the Sigstore attestation directly from the Actions OIDC
+        # identity granted by `id-token: write`.
+        run: npm publish --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Verify the published version actually carries provenance
+        # A step named «with provenance» that nobody checks is a claim, not a fact — the previous
+        # release proved it. The registry is the only authority on what was attached, so ask it.
+        # Registry reads for a fresh publish can lag, hence the bounded retry rather than one shot.
+        run: |
+          for attempt in $(seq 1 20); do
+            body=$(curl -sf "https://registry.npmjs.org/-/npm/v1/attestations/@trdlabs/engine@${VERSION}" || true)
+            if echo "$body" | grep -q 'slsa.dev/provenance'; then
+              echo "provenance attestation present for ${VERSION}"
+              exit 0
+            fi
+            sleep 15
+          done
+          echo "PUBLISHED WITHOUT PROVENANCE: no attestation for @trdlabs/engine@${VERSION}"
+          echo "npm is immutable, so this version cannot be fixed in place — cut the next patch."
+          exit 1
 
       - name: Tag the release (secondary release note)
         run: |
