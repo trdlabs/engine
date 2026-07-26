@@ -31,7 +31,8 @@
     "release:preflight": "node scripts/assert-version-publishable.mjs",
     "gate:refresh": "tsx scripts/refresh-expectations.ts",
     "tapes:build": "tsx scripts/build-tapes.ts",
-    "verify:package": "node scripts/verify-package.mjs"
+    "verify:package": "node scripts/verify-package.mjs",
+    "verify:workflows": "node scripts/verify-workflows.mjs"
   },
   "dependencies": {
     "@trdlabs/sdk": "0.13.0",

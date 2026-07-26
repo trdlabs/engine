@@ -38,6 +38,9 @@ jobs:
       # Packaging breaks silently: `files`/`exports`/build-output drift is invisible to a suite
       # that imports `src/`. Catch it in the PR, not in an immutable publish.
       - run: pnpm verify:package
+      # A broken workflow file cannot report its own breakage — GitHub still lists it as "active",
+      # so the failure only surfaces when someone tries to use it. Parse them from a job that runs.
+      - run: pnpm verify:workflows
 
   determinism-gate:
     # Static half of the determinism guarantee (SSOT «Инварианты ядра» §2): no wall clock, no

@@ -54,7 +54,17 @@ jobs:
       # failed check is not a gate, it is a log line.
 
       - name: Validate version format (semver only)
-        run: node -e 'if (!/^\d+\.\d+\.\d+$/.test(process.env.VERSION ?? "")) { console.error(`not a semver release: ${process.env.VERSION}`); process.exit(1) }'
+        # Block scalar on purpose: a plain YAML scalar ends at the first ": ", so an inline script
+        # containing a colon silently breaks the whole file's parse — which is exactly how this
+        # workflow shipped without a usable `workflow_dispatch` trigger the first time.
+        run: |
+          node -e '
+            const v = process.env.VERSION ?? "";
+            if (!/^\d+\.\d+\.\d+$/.test(v)) {
+              console.error(`not a semver release, got "${v}"`);
+              process.exit(1);
+            }
+          '
 
       - name: Assert the dispatched version equals package.json
         # The dispatch input is a human typing a number. package.json is what actually ships.
