@@ -54,12 +54,27 @@ A frozen tape's bytes never move — header included. Which guard covers what, p
 | Guard | Covers | Does not cover |
 | --- | --- | --- |
 | `scripts/build-tapes.ts` | The **full serialized file** against what is on disk. Any difference in a `FROZEN` tape — `bars`, `provenance`, `frozenBy`, `decisionRef` — is a refusal without `--force`, and the error names the changed keys. | Nothing about a tape that is not yet frozen, or a brand-new one. |
-| `scripts/tape-integrity.ts` | That the freeze is **checkable**: `FROZEN` status, an ISO `frozenOn`, a structured `decisionRef` (repo / PR / document / section, decided no later than the freeze), and prose in `frozenBy` that cites the same decision. Plus provenance, bar shape, and `contentRef` against the body. | Byte stability. Hand-editing prose that still cites the decision passes here by design — stopping that is the builder's job, above. |
+| `scripts/tape-integrity.ts` | That the freeze is **checkable**: `FROZEN` status, a real calendar `frozenOn`, a structured `decisionRef` that equals the decision this repo froze under (`RUN_IDENTITY_DECISION`), a safe repo-relative `document`, and prose in `frozenBy` containing the FULL canonical citation of that ref. Plus provenance, bar shape, and `contentRef` against the body. | Byte stability. Hand-editing prose that still carries the full citation passes here by design — stopping that is the builder's job, above. |
 | `scripts/refresh-expectations.ts` | Refuses to run without `--force`, so the anchor cannot be silently regenerated into an echo of whatever the code currently does. | — |
-| CI `golden-tapes` job | Runs all three, plus a guard-of-the-guard asserting the refresh still refuses. | — |
 
-Both builder and gate share one implementation, `scripts/lib/tape-freeze.ts`, so the rule enforced
-in CI is the same object the builder enforces rather than two copies free to drift.
+Builder and gate share one implementation, `scripts/lib/tape-freeze.ts`, so the rule enforced in CI
+is the same object the builder enforces rather than two copies free to drift.
+
+### What CI actually runs, and what it cannot
+
+Being precise here matters, because an earlier version of this table claimed the `golden-tapes` job
+ran all three guards. It does not:
+
+| CI job | Runs |
+| --- | --- |
+| `golden-tapes` | `tape-integrity`, the golden-tape byte-identity test against the binding expectations, and a guard-of-the-guard asserting `refresh-expectations` still refuses without `--force`. |
+| `tests` | The full suite, including `test/tape-guards.test.ts` — the unit coverage for the byte guard and every freeze rule. |
+
+`build-tapes` itself is **not** run in CI and cannot be: it reads the donor VPS fixtures from a
+checkout of `trdlabs/mock-platform`, which is not present on the runner. Its guard is covered two
+ways instead — the shared `assertFrozenBytesUnchanged` is unit-tested in the `tests` job, and the
+builder is the only path that writes a tape, so a locally rebuilt tape hits the same function before
+anything reaches a commit.
 
 A red golden-tape job means one of two things, and you must decide which before touching anything:
 either the change is an intended semantics change — then it is an SSOT edit plus an engine version
@@ -76,6 +91,18 @@ The first version guarded derivatives instead of claims, and review caught both 
 - `tape-integrity` asserted only that `frozenBy` *existed*. An empty string passed. The placeholder
   `"run identity"` passed. A freeze whose reason cannot be checked is a claim, not evidence — hence
   the structured `decisionRef` and the requirement that the prose cite it.
+
+A second round on the same day found the binding still too loose, and the pattern repeated:
+
+- The prose only had to contain `control-center#160`. Swapping `decision: A → B` together with
+  `document` and `section` sailed through, because **a PR number is a location, not an identity**.
+  The prose must now contain the full canonical citation — repo, PR, decision letter, document and
+  section — and the gate additionally pins `decisionRef` to `RUN_IDENTITY_DECISION`, so re-freezing
+  under a different decision has to be an explicit, reviewable edit to both.
+- `2026-99-99` passed as a date (shape-checked, never calendar-checked) and `../outside.md` passed
+  as a document path. Dates are now validated arithmetically against the calendar, and `document`
+  must be a safe repo-relative path — a pointer that can escape its repository is not a pointer to
+  that repository's decision.
 
 ## Bumping `traceFormatVersion`
 

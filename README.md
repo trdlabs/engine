@@ -60,8 +60,10 @@ That is what keeps a tape stable across contract bumps. See [`docs/run-identity.
 Consequences worth knowing before you touch a tape. `scripts/build-tapes.ts` refuses to move a
 frozen tape's **full file bytes** — header included, not just `contentRef` — without `--force`, and
 names the changed keys when it refuses. `scripts/tape-integrity.ts` requires the freeze to be
-*checkable*: a structured `decisionRef` plus prose that cites it, so neither an empty reason nor a
-`"run identity"` placeholder gets through. `scripts/refresh-expectations.ts` refuses to run without
+*checkable*: a structured `decisionRef` pinned to the decision this repo froze under, with a real
+calendar date and a safe repo-relative document path, plus prose carrying that ref's full canonical
+citation — so an empty reason, a `"run identity"` placeholder, or a decision swapped underneath a
+matching PR number all fail. `scripts/refresh-expectations.ts` refuses to run without
 `--force`. A red `golden-tapes` job means either a bug or an intended semantics change — and an
 intended one is an SSOT edit plus an engine version bump plus a reviewed `--force` refresh, in the
 same change. Rationale and the exact division of labour between the guards:
