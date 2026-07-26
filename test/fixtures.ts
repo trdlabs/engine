@@ -8,6 +8,7 @@ import { readFileSync, readdirSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import type { DecisionRef } from '../scripts/lib/tape-freeze.js';
 import type { RiskProfile, StrategyContext, StrategyDecision, StrategyModule, Tape } from '../src/index.js';
 
 const HERE = fileURLToPath(new URL('.', import.meta.url));
@@ -19,6 +20,8 @@ export interface GoldenTape extends Tape {
   /** Frozen since 2026-07-25 (owner decision (A) on run identity). `DRAFT` is no longer valid. */
   readonly status: 'FROZEN';
   readonly frozenOn: string;
+  /** Structured pointer to the decision the freeze rests on — checkable, not prose-only. */
+  readonly decisionRef: DecisionRef;
   readonly frozenBy: string;
   readonly provenance: Readonly<Record<string, string>>;
   readonly contentRef: string;

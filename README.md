@@ -57,10 +57,15 @@ owner resolved with option (A): identity carries its own trace-format version, a
 `CONTRACT_VERSION` is a plain hashed field on the host's envelope rather than part of this trace.
 That is what keeps a tape stable across contract bumps. See [`docs/run-identity.md`](docs/run-identity.md).
 
-Consequences worth knowing before you touch a tape: `scripts/build-tapes.ts` refuses to move a
-frozen tape without `--force`, and `scripts/refresh-expectations.ts` refuses to run without it. A
-red `golden-tapes` job means either a bug or an intended semantics change — and an intended one is
-an SSOT edit plus an engine version bump plus a reviewed `--force` refresh, in the same change.
+Consequences worth knowing before you touch a tape. `scripts/build-tapes.ts` refuses to move a
+frozen tape's **full file bytes** — header included, not just `contentRef` — without `--force`, and
+names the changed keys when it refuses. `scripts/tape-integrity.ts` requires the freeze to be
+*checkable*: a structured `decisionRef` plus prose that cites it, so neither an empty reason nor a
+`"run identity"` placeholder gets through. `scripts/refresh-expectations.ts` refuses to run without
+`--force`. A red `golden-tapes` job means either a bug or an intended semantics change — and an
+intended one is an SSOT edit plus an engine version bump plus a reviewed `--force` refresh, in the
+same change. Rationale and the exact division of labour between the guards:
+[`docs/run-identity.md`](docs/run-identity.md).
 
 ## What was extracted, and from where
 

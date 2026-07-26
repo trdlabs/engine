@@ -7,9 +7,9 @@
 // it reads mock-platform read-only — the engine never writes to a donor repo.
 //
 // The tapes are FROZEN (owner decision (A), 2026-07-25). This script will NOT rewrite a frozen tape
-// whose content would change: a frozen tape's bytes are the parity anchor Ф3 measures against, and
-// moving them silently would make the anchor an echo of whatever the code currently does. Pass
-// `--force` to overwrite deliberately, and expect to justify it in the same change.
+// whose FILE BYTES would change — header included. An earlier version compared only `contentRef`,
+// which covers `{symbol, timeframe, bars, market}`; editing `frozenBy` or `provenance` slipped
+// through it. The guard now diffs the full serialized file (see `lib/tape-freeze.ts`).
 //
 // Usage: tsx scripts/build-tapes.ts [path-to-mock-platform] [--force]
 
@@ -18,21 +18,21 @@ import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { contentRef } from '../src/determinism/hash.js';
-import { canonicalJson } from '../src/determinism/canonical-json.js';
 import type { Bar } from '../src/contract/index.js';
+import { canonicalJson } from '../src/determinism/canonical-json.js';
+import { contentRef } from '../src/determinism/hash.js';
+import {
+  FROZEN_BY,
+  FROZEN_ON,
+  RUN_IDENTITY_DECISION,
+  assertFrozenBytesUnchanged,
+  serializeTapeFile,
+} from './lib/tape-freeze.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const argv = process.argv.slice(2);
 const FORCE = argv.includes('--force');
 const MOCK = argv.find((a) => !a.startsWith('--')) ?? join(ROOT, '..', 'mock-platform');
-
-const FROZEN_BY =
-  'Owner decision (A) on run identity, 2026-07-25 — control-center card `shared-execution-engine`, ' +
-  '«Open question — does run identity need its own format version?». Identity carries its own ' +
-  'trace-format version; the research CONTRACT_VERSION is a plain hashed field on the host ' +
-  'envelope, not part of this trace. Frozen bytes: this tape and its expected refs are the parity ' +
-  'anchor Ф3 measures against and must not move without an SSOT decision plus an engine version bump.';
 
 /** Slices to extract. Kept small on purpose: a golden tape is evidence, not a dataset. */
 const SLICES = [
@@ -106,7 +106,8 @@ for (const slice of SLICES) {
   const tape = {
     id: slice.id,
     status: 'FROZEN',
-    frozenOn: '2026-07-25',
+    frozenOn: FROZEN_ON,
+    decisionRef: RUN_IDENTITY_DECISION,
     frozenBy: FROZEN_BY,
     provenance: {
       sourceRepo: 'trdlabs/mock-platform',
@@ -114,27 +115,22 @@ for (const slice of SLICES) {
       sourceTier: slice.tier,
       sourceSymbol: symbol,
       extractedRange: `${slice.from}..${slice.from + bars.length - 1} (${timeframe})`,
-      extractedBy: 'scripts/build-tapes.mjs',
+      extractedBy: 'scripts/build-tapes.ts',
     },
     contentRef: ref,
     ...body,
   };
 
   const out = join(ROOT, 'test', 'golden', `${slice.id}.tape.json`);
+  const next = serializeTapeFile(tape);
 
-  // A frozen tape may be regenerated only if it comes out byte-identical. Anything else needs an
-  // explicit, reviewable `--force`.
-  if (existsSync(out) && !FORCE) {
-    const current = JSON.parse(readFileSync(out, 'utf8')) as { status?: string; contentRef?: string };
-    if (current.status === 'FROZEN' && current.contentRef !== ref) {
-      throw new Error(
-        `build-tapes: refusing to move FROZEN tape ${slice.id}\n` +
-          `  frozen  ${current.contentRef}\n  rebuilt ${ref}\n` +
-          '  A frozen tape is the parity anchor (docs/run-identity.md). Re-run with --force only as ' +
-          'part of a change that says why the anchor moves.',
-      );
-    }
-  }
-  writeFileSync(out, `${JSON.stringify(tape, null, 2)}\n`);
+  // A frozen tape may be regenerated only if it comes out BYTE-identical — header included.
+  assertFrozenBytesUnchanged({
+    id: slice.id,
+    next,
+    existing: existsSync(out) ? readFileSync(out, 'utf8') : null,
+    force: FORCE,
+  });
+  writeFileSync(out, next);
   console.log(`wrote ${out}  symbol=${symbol} tf=${timeframe} bars=${bars.length}`);
 }

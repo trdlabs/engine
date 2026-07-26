@@ -2,14 +2,22 @@
   "id": "t1-slice-a",
   "status": "FROZEN",
   "frozenOn": "2026-07-25",
-  "frozenBy": "Owner decision (A) on run identity, 2026-07-25 — control-center card `shared-execution-engine`, «Open question — does run identity need its own format version?». Identity carries its own trace-format version; the research CONTRACT_VERSION is a plain hashed field on the host envelope, not part of this trace. Frozen bytes: this tape and its expected refs are the parity anchor Ф3 measures against and must not move without an SSOT decision plus an engine version bump.",
+  "decisionRef": {
+    "decision": "A",
+    "decidedOn": "2026-07-25",
+    "repo": "trdlabs/control-center",
+    "pr": 160,
+    "document": "docs/delivery/initiatives/shared-execution-engine.md",
+    "section": "Open question — does run identity need its own format version?"
+  },
+  "frozenBy": "Frozen by owner decision (A) on run identity, 2026-07-25 (control-center#160, \"Open question — does run identity need its own format version?\"). Run identity carries its own trace-format version; the research CONTRACT_VERSION is a plain hashed field on the host envelope, not part of this trace — which is what keeps this tape stable across contract bumps. These bytes are the parity anchor Ф3 measures extraction equivalence against and must not move without an SSOT decision plus an engine version bump.",
   "provenance": {
     "sourceRepo": "trdlabs/mock-platform",
     "sourceFixture": "fixtures/2026-06-22-to-2026-06-28-vps",
     "sourceTier": "T1",
     "sourceSymbol": "ACTUSDT",
     "extractedRange": "0..159 (1h)",
-    "extractedBy": "scripts/build-tapes.mjs"
+    "extractedBy": "scripts/build-tapes.ts"
   },
   "contentRef": "sha256:c785b7e36e2bdaee91ebfa272f66200a49a083a7329bc5e3318939d8b20502fe",
   "symbol": "ACTUSDT",

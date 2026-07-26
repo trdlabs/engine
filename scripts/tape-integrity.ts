@@ -1,30 +1,40 @@
 #!/usr/bin/env node
 // Golden-tape integrity gate.
 //
-// Every committed tape must (a) declare its provenance, (b) declare its status, and (c) match the
-// content hash recorded in its own header. A tape whose bytes drifted from its recorded ref is a
-// silently-moved parity anchor — exactly the failure mode golden tapes exist to prevent.
+// Every committed tape must (a) rest on a checkable owner decision, (b) declare its provenance,
+// (c) be FROZEN, and (d) match the content hash recorded in its own header. A tape whose bytes
+// drifted from its recorded ref is a silently-moved parity anchor — exactly the failure mode golden
+// tapes exist to prevent.
 //
-// FROZEN status: owner decision (A) on run identity (2026-07-25) unblocked the freeze, so `DRAFT`
-// is no longer an accepted state — a tape that is not `FROZEN` is not a parity anchor, and Ф3
-// measures extraction equivalence against these bytes. `frozenOn` / `frozenBy` are required for the
-// same reason provenance is: a freeze without a recorded reason is a claim, not evidence.
-// See docs/run-identity.md.
+// The freeze half of the checks lives in `lib/tape-freeze.ts`, shared with `build-tapes`, so the
+// rule enforced in CI is the same object the builder enforces. See docs/run-identity.md.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { contentRef } from '../src/determinism/hash.js';
 import { canonicalJson } from '../src/determinism/canonical-json.js';
+import { contentRef } from '../src/determinism/hash.js';
+import { validateFreeze } from './lib/tape-freeze.js';
 
 const ROOT = fileURLToPath(new URL('..', import.meta.url));
 const TAPES = join(ROOT, 'test', 'golden');
 
-const REQUIRED = ['id', 'status', 'frozenOn', 'frozenBy', 'provenance', 'symbol', 'timeframe', 'bars'];
-const ALLOWED_STATUS = ['FROZEN'];
+const REQUIRED = [
+  'id',
+  'status',
+  'frozenOn',
+  'decisionRef',
+  'frozenBy',
+  'provenance',
+  'symbol',
+  'timeframe',
+  'bars',
+];
 
-const files = readdirSync(TAPES).filter((f) => f.endsWith('.tape.json')).sort();
+const files = readdirSync(TAPES)
+  .filter((f) => f.endsWith('.tape.json'))
+  .sort();
 if (files.length === 0) {
   console.error('tape integrity: no tapes found in test/golden');
   process.exit(1);
@@ -32,33 +42,33 @@ if (files.length === 0) {
 
 const problems: string[] = [];
 for (const file of files) {
-  const tape = JSON.parse(readFileSync(join(TAPES, file), 'utf8')) as any;
+  const tape = JSON.parse(readFileSync(join(TAPES, file), 'utf8')) as Record<string, unknown>;
   for (const key of REQUIRED) {
     if (tape[key] === undefined) problems.push(`${file}: missing required field "${key}"`);
   }
-  if (tape.status !== undefined && !ALLOWED_STATUS.includes(tape.status)) {
-    problems.push(
-      `${file}: status must be ${ALLOWED_STATUS.join('|')} (got "${tape.status}") — ` +
-        'tapes were frozen on 2026-07-25 by owner decision (A); see docs/run-identity.md',
-    );
-  }
+
+  problems.push(...validateFreeze(tape, file));
+
   if (tape.provenance !== undefined) {
-    for (const key of ['sourceRepo', 'sourceFixture', 'sourceSymbol', 'extractedRange']) {
-      if (tape.provenance[key] === undefined) {
+    const prov = tape.provenance as Record<string, unknown>;
+    for (const key of ['sourceRepo', 'sourceFixture', 'sourceSymbol', 'extractedRange', 'extractedBy']) {
+      if (prov[key] === undefined) {
         problems.push(`${file}: provenance.${key} is required (a tape without provenance is not evidence)`);
       }
     }
   }
-  if (!Array.isArray(tape.bars) || tape.bars.length === 0) {
+
+  const bars = tape.bars;
+  if (!Array.isArray(bars) || bars.length === 0) {
     problems.push(`${file}: bars must be a non-empty array`);
   } else {
-    for (let i = 1; i < tape.bars.length; i += 1) {
-      if (!(tape.bars[i].ts > tape.bars[i - 1].ts)) {
+    for (let i = 1; i < bars.length; i += 1) {
+      if (!(bars[i].ts > bars[i - 1].ts)) {
         problems.push(`${file}: bars are not strictly ascending by ts at index ${i}`);
         break;
       }
     }
-    for (const [i, b] of (tape.bars as Record<string, unknown>[]).entries()) {
+    for (const [i, b] of (bars as Record<string, unknown>[]).entries()) {
       for (const k of ['ts', 'open', 'high', 'low', 'close', 'volume']) {
         if (typeof b[k] !== 'number') {
           problems.push(`${file}: bar ${i} is missing mandatory OHLCV field "${k}" (SSOT decision 7)`);
@@ -78,7 +88,7 @@ for (const file of files) {
   if (tape.contentRef !== ref) {
     problems.push(
       `${file}: contentRef drift on a FROZEN tape — the parity anchor moved\n` +
-        `    recorded ${tape.contentRef}\n    actual   ${ref}`,
+        `    recorded ${String(tape.contentRef)}\n    actual   ${ref}`,
     );
   }
 }

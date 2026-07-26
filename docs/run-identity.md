@@ -49,15 +49,33 @@ Tapes are **`FROZEN`** as of 2026-07-25, and `test/golden/expected-traces.json` 
 `scripts/tape-integrity.ts` rejects any status other than `FROZEN`, and the golden-tape test
 compares every recorded ref rather than merely detecting change.
 
-A frozen tape's bytes never move. Practically:
+A frozen tape's bytes never move — header included. Which guard covers what, precisely:
 
-- `scripts/build-tapes.ts` refuses to rewrite a frozen tape whose content would change, unless
-  invoked with `--force`.
-- `scripts/refresh-expectations.ts` refuses to run without `--force`, because silently regenerating
-  the expectations would turn the parity anchor into an echo of whatever the code currently does.
-- A red golden-tape job means one of two things, and you must decide which before touching anything:
-  either the change is an intended semantics change — then it is an SSOT edit plus an engine version
-  bump plus a reviewed `--force` refresh — or it is a bug.
+| Guard | Covers | Does not cover |
+| --- | --- | --- |
+| `scripts/build-tapes.ts` | The **full serialized file** against what is on disk. Any difference in a `FROZEN` tape — `bars`, `provenance`, `frozenBy`, `decisionRef` — is a refusal without `--force`, and the error names the changed keys. | Nothing about a tape that is not yet frozen, or a brand-new one. |
+| `scripts/tape-integrity.ts` | That the freeze is **checkable**: `FROZEN` status, an ISO `frozenOn`, a structured `decisionRef` (repo / PR / document / section, decided no later than the freeze), and prose in `frozenBy` that cites the same decision. Plus provenance, bar shape, and `contentRef` against the body. | Byte stability. Hand-editing prose that still cites the decision passes here by design — stopping that is the builder's job, above. |
+| `scripts/refresh-expectations.ts` | Refuses to run without `--force`, so the anchor cannot be silently regenerated into an echo of whatever the code currently does. | — |
+| CI `golden-tapes` job | Runs all three, plus a guard-of-the-guard asserting the refresh still refuses. | — |
+
+Both builder and gate share one implementation, `scripts/lib/tape-freeze.ts`, so the rule enforced
+in CI is the same object the builder enforces rather than two copies free to drift.
+
+A red golden-tape job means one of two things, and you must decide which before touching anything:
+either the change is an intended semantics change — then it is an SSOT edit plus an engine version
+bump plus a reviewed `--force` refresh — or it is a bug.
+
+### Why the guards are shaped this way (review, 2026-07-26)
+
+The first version guarded derivatives instead of claims, and review caught both cases:
+
+- `build-tapes` compared only `contentRef`, which is computed over `{symbol, timeframe, bars,
+  market}`. Editing `frozenBy` or `provenance` left it untouched, so the guard passed and the file's
+  bytes changed anyway — while this document promised they could not. The drift was already live: the
+  builder wrote `extractedBy: scripts/build-tapes.mjs` while the committed tapes said `.ts`.
+- `tape-integrity` asserted only that `frozenBy` *existed*. An empty string passed. The placeholder
+  `"run identity"` passed. A freeze whose reason cannot be checked is a claim, not evidence — hence
+  the structured `decisionRef` and the requirement that the prose cite it.
 
 ## Bumping `traceFormatVersion`
 
