@@ -95,6 +95,19 @@ interface Accumulators {
   readonly fundingLedger: FundingSettlement[];
 }
 
+/**
+ * Can this decision possibly produce an order? `idle` cannot by definition, and neither can
+ * `annotate` — the contract defines it as metadata «без действия». Both skip risk entirely: a
+ * verdict on a decision that could not act either way is noise in the canonical trace, and the
+ * trace is the parity anchor of the whole initiative.
+ *
+ * This is a predicate rather than a `!== 'idle'` check so that adding a member to the contract's
+ * union is a decision made HERE, not a silent inheritance of whatever upstream shipped.
+ */
+function isActionable(decision: StrategyDecision): boolean {
+  return decision.kind !== 'idle' && decision.kind !== 'annotate';
+}
+
 function orderId(symbol: string, barIndex: number, intent: string): string {
   return `ord-${symbol}-${barIndex}-${intent}`;
 }
@@ -334,7 +347,7 @@ export function simulate(request: RunRequest): CanonicalTrace {
     // (3) onBarClose → risk → pending(open).
     const base = strategy.onBarClose(buildCtx(t));
     let riskRecord: RiskDecision | null = null;
-    if (portfolio.isFlat && portfolio.pending === null && base.kind !== 'idle') {
+    if (portfolio.isFlat && portfolio.pending === null && isActionable(base)) {
       const outcome = risk.evaluate(base, t, riskCtx(bar.close));
       acc.riskDecisions.push(outcome.record);
       riskRecord = outcome.record;
@@ -365,7 +378,7 @@ export function simulate(request: RunRequest): CanonicalTrace {
     if (portfolio.position !== null && strategy.onPositionBar !== undefined) {
       const posBase = strategy.onPositionBar(buildCtx(t));
       let posRisk: RiskDecision | null = null;
-      if (posBase.kind !== 'idle' && portfolio.position !== null && portfolio.pending === null) {
+      if (isActionable(posBase) && portfolio.position !== null && portfolio.pending === null) {
         const outcome = risk.evaluate(posBase, t, riskCtx(bar.close));
         acc.riskDecisions.push(outcome.record);
         posRisk = outcome.record;

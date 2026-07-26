@@ -4,26 +4,38 @@
 // `@trdlabs/sdk` owns the *contract* vocabulary (`RealityModel` and friends — re-exported below,
 // never redefined here), this package owns *execution*, and hosts own orchestration.
 //
-// What IS defined here is the engine's own port surface: `Bar`, the decision vocabulary the core
-// consumes, `RiskProfile`, and the `ExecutionPort` / `Clock` seams. Per the initiative decision
+// The decision vocabulary belongs to that contract half and is IMPORTED, not restated: a strategy
+// authored against `@trdlabs/sdk` must be the same type the core consumes, or the seam only looks
+// closed. It did not: a private copy here type-checked in isolation while refusing to unify with
+// the sdk's union at every host boundary.
+//
+// What IS still defined here is the engine's own port surface: `Bar`, `RiskProfile`, and the
+// `ExecutionPort` / `Clock` seams — shapes the contract does not describe (017 has no `sizing`
+// slot, and the core's bar makes every OHLCV field mandatory). Per the initiative decision
 // «Engine v1 scope», this surface must stay compatible with the 083 `ActorCommand` sketch so that
 // engine v2 (event-driven order flow) is a version of THIS package, not a different one.
 
 import type {
+  AddToPositionDecision,
+  AnnotateDecision,
+  EnterDecision,
+  ExitDecision,
   FeeModel,
   FillModel,
   FundingModel,
+  IdleDecision,
+  LifecycleHook as ContractLifecycleHook,
   RealityModel,
+  Ref,
   SlippageModel,
+  StrategyDecision,
+  UpdateProtectionDecision,
 } from '@trdlabs/sdk/research-contract';
 
 export type { FeeModel, FillModel, FundingModel, RealityModel, SlippageModel };
 
-/** Versioned reference to a runner-owned artifact (risk profile, reality model). */
-export interface Ref {
-  readonly id: string;
-  readonly version: string;
-}
+/** Versioned reference to a runner-owned artifact (risk profile, reality model). Contract-owned. */
+export type { Ref };
 
 /**
  * Base bar of the core (SSOT decision 7): `ts, open, high, low, close, volume` — ALL mandatory.
@@ -82,49 +94,41 @@ export interface RiskProfile {
   readonly scaleInLimits?: AddLimits;
 }
 
-// --- Decision vocabulary -----------------------------------------------------------------------
+// --- Decision vocabulary (contract-owned) ------------------------------------------------------
 
-export interface IdleDecision {
-  readonly kind: 'idle';
-}
+/**
+ * The decision union the core executes, re-exported verbatim from `@trdlabs/sdk`. NOT redefined:
+ * one owner of the vocabulary, or a strategy's decision and the core's decision are different
+ * types that merely resemble each other.
+ *
+ * Two members the core does not act on, and deliberately so:
+ *   • `idle`     — no action by definition;
+ *   • `annotate` — metadata only («без действия» in the contract). Treated exactly like `idle` by
+ *     the loop: it never reaches risk, so it never leaves a `no_op` verdict in the canonical trace.
+ *     A ledger entry for a decision that could not act either way is noise in the parity anchor.
+ *
+ * `EnterDecision` carries contract fields the core ignores (`entry`, `ttl`, `sizingHint`, `tags`,
+ * `rationale`, `evidenceRefs`) — authoring surface, not execution input. Sizing in particular is
+ * risk's hard authority (SSOT decision 3), so a strategy's `sizingHint` on an entry is advisory
+ * and the core does not read it.
+ */
+export type {
+  AddToPositionDecision,
+  AnnotateDecision,
+  EnterDecision,
+  ExitDecision,
+  IdleDecision,
+  StrategyDecision,
+  UpdateProtectionDecision,
+};
 
-export interface EnterDecision {
-  readonly kind: 'enter';
-  readonly side: 'long' | 'short';
-  /** Fractional protection distances from the average entry price. */
-  readonly stop?: number;
-  readonly take?: number;
-}
-
-export interface ExitDecision {
-  readonly kind: 'exit';
-  /** Strategy-authored close reason carried into `Trade.closeReason`. */
-  readonly target: string;
-  /** Partial exit percent (0 < p < 100); `>= 100` clamps to a full exit; absent ⇒ full exit. */
-  readonly percent?: number;
-}
-
-export interface AddToPositionDecision {
-  readonly kind: 'add_to_position';
-  readonly mode: 'dca' | 'scale_in';
-  readonly sizingHint?: number;
-}
-
-export interface UpdateProtectionDecision {
-  readonly kind: 'update_protection';
-  readonly stop?: number;
-  readonly take?: number;
-}
-
-export type StrategyDecision =
-  | IdleDecision
-  | EnterDecision
-  | ExitDecision
-  | AddToPositionDecision
-  | UpdateProtectionDecision;
-
-/** Lifecycle hook a decision came from. */
-export type LifecycleHook = 'onBarClose' | 'onPositionBar';
+/**
+ * Lifecycle hook a decision came from — deliberately NARROWER than the contract's full hook list
+ * (`init` / `dispose` / `apply` / `onEvent` are host and overlay concerns, and the v1 loop drives
+ * neither). Expressed as a subset of the contract type rather than a fresh literal union, so that
+ * a rename or removal upstream is a compile error here instead of silent drift.
+ */
+export type LifecycleHook = Extract<ContractLifecycleHook, 'onBarClose' | 'onPositionBar'>;
 
 // --- Ports -------------------------------------------------------------------------------------
 
