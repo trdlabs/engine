@@ -6,10 +6,16 @@
 // change that also carries the SSOT edit and the engine version bump explaining why the refs move.
 // See docs/run-identity.md.
 
-import { writeFileSync } from 'node:fs';
+import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
-import { STANDARD_NO_FUNDING_1, simulate, traceRef, type RunRequest } from '../src/index.js';
+import {
+  ENGINE_VERSION,
+  STANDARD_NO_FUNDING_1,
+  simulate,
+  traceRef,
+  type RunRequest,
+} from '../src/index.js';
 import {
   ALWAYS_FLAT,
   FIXED_USD_RISK,
@@ -36,7 +42,17 @@ const BUNDLES = [
   { name: 'always_flat', strategy: ALWAYS_FLAT, risk: REFERENCE_RISK },
 ] as const;
 
-const entries = [];
+/** One committed expectation: the tape × bundle pair and the refs it is frozen at. */
+interface ExpectationEntry {
+  readonly tape: string;
+  readonly bundle: string;
+  readonly tapeRef: string;
+  readonly traceRef: string;
+  readonly closedTrades: number;
+  readonly finalEquity: number;
+}
+
+const entries: ExpectationEntry[] = [];
 for (const tape of tapes) {
   for (const bundle of BUNDLES) {
     const request: RunRequest = {
@@ -60,9 +76,51 @@ for (const tape of tapes) {
   }
 }
 
+const out = join(GOLDEN_DIR, 'expected-traces.json');
+
+// ── Semantics gate ───────────────────────────────────────────────────────────────────────────────
+// `ENGINE_VERSION` is the execution-SEMANTICS generation, deliberately decoupled from the package
+// version (owner decision 2026-07-26). Decoupling only holds if something enforces it, otherwise
+// the constant quietly becomes decorative: semantics drift, the anchor is force-refreshed, and every
+// trace still claims the same core produced it.
+//
+// So a forced refresh that MOVES any ref must also move `ENGINE_VERSION`. `--force` proves the
+// author meant to move the anchor; this proves they also said WHICH core the new behaviour is.
+// A refresh that changes nothing is fine (idempotent re-run) and needs no bump.
+const committed = (() => {
+  try {
+    return JSON.parse(readFileSync(out, 'utf8')) as {
+      engineVersion?: string;
+      entries?: readonly { tape: string; bundle: string; traceRef: string }[];
+    };
+  } catch {
+    return {};
+  }
+})();
+
+const moved = (committed.entries ?? []).filter((prior) => {
+  const fresh = entries.find((e) => e.tape === prior.tape && e.bundle === prior.bundle);
+  return fresh === undefined || fresh.traceRef !== prior.traceRef;
+});
+
+if (moved.length > 0 && committed.engineVersion === ENGINE_VERSION) {
+  console.error(
+    `refresh-expectations: ${moved.length} ref(s) move, but ENGINE_VERSION is still ` +
+      `"${ENGINE_VERSION}".\n` +
+      '  Moving the parity anchor IS a semantics change, and a semantics change must say which core\n' +
+      '  it belongs to — otherwise every trace keeps claiming the old behaviour produced it.\n' +
+      '  Bump ENGINE_VERSION in src/core/simulate.ts in this same change (and the SSOT edit with it).\n' +
+      `  Moved: ${moved.map((m) => `${m.tape}/${m.bundle}`).join(', ')}`,
+  );
+  process.exit(1);
+}
+
 const payload = {
   status: 'FROZEN',
   frozenOn: '2026-07-25',
+  // Recorded so the gate above can tell «the anchor moved under a new core» from «it moved and
+  // nobody noticed». Not the package version — see ENGINE_VERSION's own documentation.
+  engineVersion: ENGINE_VERSION,
   note:
     'BINDING. Owner decision (A) on run identity (2026-07-25) unblocked the freeze: these refs are ' +
     'the parity anchor, not a change detector. A mismatch is a failure until proven to be an ' +
@@ -72,6 +130,5 @@ const payload = {
   entries,
 };
 
-const out = join(GOLDEN_DIR, 'expected-traces.json');
 writeFileSync(out, `${JSON.stringify(payload, null, 2)}\n`);
 console.log(`wrote ${out} (${entries.length} entries)`);

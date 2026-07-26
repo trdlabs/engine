@@ -1,10 +1,9 @@
 {
   "name": "@trdlabs/engine",
-  "version": "0.0.0",
+  "version": "0.1.0",
   "description": "One deterministic execution core (decision → risk → pending order → fill → portfolio → canonical trace) shared by backtester and platform.",
   "license": "Apache-2.0",
   "type": "module",
-  "private": true,
   "engines": {
     "node": ">=22"
   },

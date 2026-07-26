@@ -1,0 +1,114 @@
+# Manual engine release — triggered via workflow_dispatch only.
+#
+# Ported from `@trdlabs/backtester-sdk`'s release workflow, per the initiative's «Environment /
+# operations prerequisites»: OIDC provenance + `assert-version-publishable` + a fail-closed
+# preflight. The npm registry is immutable per version, so PUBLISHING IS THE RELEASE; the git tag
+# created afterwards is a release note, not a delivery channel.
+#
+# What this workflow deliberately does NOT do: bump `ENGINE_VERSION`. That constant is the
+# execution-SEMANTICS generation and rides inside every canonical trace — a release must not
+# restamp run identity (owner decision 2026-07-26). See `src/core/simulate.ts` and
+# `docs/run-identity.md`.
+#
+# Authentication: the `NPM_TOKEN` repository secret (an npm automation token scoped to publish
+# `@trdlabs/engine`), consumed as `NODE_AUTH_TOKEN`. Provenance comes from GitHub OIDC
+# (`id-token: write`). Once a trusted publisher is configured for the package on npmjs.com, the
+# `NODE_AUTH_TOKEN` env can be dropped in favour of pure OIDC.
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish to npm (must equal package.json version, e.g. 0.1.0)'
+        required: true
+        type: string
+
+permissions:
+  contents: write # secondary git tag + release note only
+  id-token: write # npm provenance attestation (Sigstore via GitHub OIDC)
+
+concurrency:
+  group: release-${{ inputs.version }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      VERSION: ${{ inputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+        with:
+          version: 11.6.0
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: 'https://registry.npmjs.org'
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+
+      # ── Fail-closed preflight ───────────────────────────────────────────────
+      # Every check below must be able to STOP the release. A release that publishes anyway on a
+      # failed check is not a gate, it is a log line.
+
+      - name: Validate version format (semver only)
+        run: node -e 'if (!/^\d+\.\d+\.\d+$/.test(process.env.VERSION ?? "")) { console.error(`not a semver release: ${process.env.VERSION}`); process.exit(1) }'
+
+      - name: Assert the dispatched version equals package.json
+        # The dispatch input is a human typing a number. package.json is what actually ships.
+        # Publishing when they disagree would tag one version and ship another.
+        run: |
+          node -e '
+            const pkg = require("./package.json");
+            if (pkg.version !== process.env.VERSION) {
+              console.error(`dispatched ${process.env.VERSION} but package.json says ${pkg.version} — bump and merge first`);
+              process.exit(1);
+            }
+          '
+
+      - name: Release preflight (public, semver, licence, provenance)
+        run: pnpm release:preflight
+
+      - name: Refuse to publish a version that already exists
+        # npm is immutable per version; a second publish of the same number is an error, not an
+        # overwrite. Failing here keeps the error legible instead of a registry 403.
+        run: |
+          if npm view "@trdlabs/engine@${VERSION}" version >/dev/null 2>&1; then
+            echo "@trdlabs/engine@${VERSION} is already published — pick a new version"
+            exit 1
+          fi
+
+      # ── The gates that make the artifact trustworthy ────────────────────────
+      # The whole value of this package is that it is deterministic and anchored. Publishing a
+      # build that has not re-proven both would ship the claim without the evidence.
+
+      - name: Typecheck
+        run: pnpm typecheck
+      - name: Determinism gate
+        run: pnpm gate:determinism
+      - name: Tape integrity (FROZEN anchor)
+        run: pnpm gate:tapes
+      - name: Full suite
+        run: pnpm test
+      - name: Build dist
+        run: pnpm build
+
+      - name: Publish to npm (with provenance)
+        run: pnpm publish --access public --no-git-checks
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Tag the release (secondary release note)
+        run: |
+          git tag "v${VERSION}"
+          git push origin "v${VERSION}"
+
+      - name: Create the GitHub release note
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "v${VERSION}" \
+            --title "@trdlabs/engine v${VERSION}" \
+            --notes "Published to npm with provenance. The canonical delivery channel is the npm registry; this release carries no tarball."
