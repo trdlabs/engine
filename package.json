@@ -15,7 +15,8 @@
     }
   },
   "files": [
-    "dist"
+    "dist",
+    "NOTICE"
   ],
   "publishConfig": {
     "access": "public",
@@ -29,7 +30,8 @@
     "gate:tapes": "tsx scripts/tape-integrity.ts",
     "release:preflight": "node scripts/assert-version-publishable.mjs",
     "gate:refresh": "tsx scripts/refresh-expectations.ts",
-    "tapes:build": "tsx scripts/build-tapes.ts"
+    "tapes:build": "tsx scripts/build-tapes.ts",
+    "verify:package": "node scripts/verify-package.mjs"
   },
   "dependencies": {
     "@trdlabs/sdk": "0.13.0",
