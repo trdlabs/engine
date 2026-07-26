@@ -35,6 +35,9 @@ jobs:
       # rather than only at release time: a manifest that cannot be published should fail in the PR
       # that broke it, not in the workflow_dispatch someone runs three weeks later.
       - run: pnpm release:preflight
+      # Packaging breaks silently: `files`/`exports`/build-output drift is invisible to a suite
+      # that imports `src/`. Catch it in the PR, not in an immutable publish.
+      - run: pnpm verify:package
 
   determinism-gate:
     # Static half of the determinism guarantee (SSOT «Инварианты ядра» §2): no wall clock, no

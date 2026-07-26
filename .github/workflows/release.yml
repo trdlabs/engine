@@ -95,6 +95,12 @@ jobs:
       - name: Build dist
         run: pnpm build
 
+      - name: Clean-consumer gate (the tarball, not the repo)
+        # The suite imports `src/`; consumers get the TARBALL. They drift whenever `files`,
+        # `exports` or the build output move — a package can be fully green in-repo and still
+        # install into a broken import. Proven here BEFORE publish, because npm is immutable.
+        run: pnpm verify:package
+
       - name: Publish to npm (with provenance)
         run: pnpm publish --access public --no-git-checks
         env:
