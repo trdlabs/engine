@@ -70,7 +70,22 @@ import { parseTimeframeMs } from './timeframe.js';
  */
 export const TRACE_FORMAT_VERSION = '1';
 
-/** The engine version stamped into every trace: which core executed the run. */
+/**
+ * The execution-SEMANTICS generation stamped into every trace: which core behaviour executed the
+ * run. Owner decision 2026-07-26: this is deliberately **decoupled from `package.json`'s version**.
+ *
+ * The two answer different questions. The package version is a distribution fact — it moves for a
+ * release, a dependency bump, a typo in a doc comment. This constant is an identity fact: it is
+ * part of the canonical trace, so every value it takes invalidates every frozen hash downstream.
+ * Tying it to the package version would mean a patch release silently invalidating the parity
+ * anchor and every consumer's goldens — precisely the conflation owner decision (A) diagnosed for
+ * `017.2 → 017.3` and refused to repeat.
+ *
+ * So: bump this when, and ONLY when, execution semantics change. `refresh-expectations` enforces
+ * the converse — moving the anchor without moving this constant is rejected — so the two cannot
+ * drift apart in either direction. The value stays `0.0.0` because the semantics frozen on
+ * 2026-07-25 have not changed since; a release does not touch it.
+ */
 export const ENGINE_VERSION = '0.0.0';
 
 /** Everything a run binds. */
