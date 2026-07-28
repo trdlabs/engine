@@ -11,7 +11,8 @@
 // accept / clamp / reject on every decision. `accept`/`clamp` → the decision executes (clamp
 // records the pinched hints); `reject` → no order is created.
 
-import { Decimal } from 'decimal.js';
+
+import { min, mul } from './money.js';
 
 import type {
   AddLimits,
@@ -65,12 +66,12 @@ export class RiskEngine {
    */
   private sizedNotional(equity: number): number {
     const sizing = this.profile.sizing;
-    const raw =
-      sizing.kind === 'fixed_usd'
-        ? new Decimal(sizing.usd)
-        : new Decimal(equity).times(sizing.pct);
-    const cap = new Decimal(equity).times(this.profile.exposureLimits.maxPositionNotionalPct);
-    return Decimal.min(raw, cap).toNumber();
+    // `min` от уже переведённых чисел эквивалентен `min` от Decimal с последующим переводом:
+    // toNumber монотонен, поэтому порядок не меняет победителя, а совпавшие после округления
+    // операнды дают одно и то же значение.
+    const raw = sizing.kind === 'fixed_usd' ? sizing.usd : mul(equity, sizing.pct);
+    const cap = mul(equity, this.profile.exposureLimits.maxPositionNotionalPct);
+    return min(raw, cap);
   }
 
   private normHint(value: number | undefined, bounds?: Bounds): number | undefined {
@@ -299,7 +300,7 @@ export class RiskEngine {
     const allowedPct = Math.min(requestedPct, limits.maxAddNotionalPct, totalRemainingPct);
     if (allowedPct <= 0) return reject(limitExceeded);
 
-    const notional = new Decimal(ctx.equity).times(allowedPct).toNumber();
+    const notional = mul(ctx.equity, allowedPct);
     if (!(notional > 0)) return reject(limitExceeded);
 
     if (allowedPct < requestedPct) {

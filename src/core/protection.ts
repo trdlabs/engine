@@ -9,7 +9,8 @@
 // both, STOP fires first (SSOT decision 10 — worst-case, no flattery). `fillBase` follows the
 // gap-through rule. No slippage or fee here — that is `ExecutionSimulator.computeProtectionFill`.
 
-import { Decimal } from 'decimal.js';
+
+import { levelFrom } from './money.js';
 
 import type { Bar } from '../contract/index.js';
 
@@ -35,21 +36,9 @@ export function protectionLevels(
   stop?: number,
   take?: number,
 ): ProtectionLevels {
-  const e = new Decimal(entryPrice);
-  const stopLevel =
-    stop === undefined
-      ? undefined
-      : (side === 'long'
-          ? e.times(new Decimal(1).minus(stop))
-          : e.times(new Decimal(1).plus(stop))
-        ).toNumber();
-  const takeLevel =
-    take === undefined
-      ? undefined
-      : (side === 'long'
-          ? e.times(new Decimal(1).plus(take))
-          : e.times(new Decimal(1).minus(take))
-        ).toNumber();
+  // Стоп уводит цену против позиции, тейк — в её сторону; направление и задаёт знак.
+  const stopLevel = stop === undefined ? undefined : levelFrom(entryPrice, stop, side === 'long' ? -1 : 1);
+  const takeLevel = take === undefined ? undefined : levelFrom(entryPrice, take, side === 'long' ? 1 : -1);
   return {
     ...(stopLevel !== undefined ? { stopLevel } : {}),
     ...(takeLevel !== undefined ? { takeLevel } : {}),
