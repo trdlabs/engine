@@ -12,7 +12,6 @@
 import { Decimal } from 'decimal.js';
 
 import type { Bar } from '../contract/index.js';
-import { quantize } from '../determinism/canonical-json.js';
 
 /** Quantized trigger prices recomputed from the average entry price. */
 export interface ProtectionLevels {
@@ -40,21 +39,17 @@ export function protectionLevels(
   const stopLevel =
     stop === undefined
       ? undefined
-      : quantize(
-          (side === 'long'
-            ? e.times(new Decimal(1).minus(stop))
-            : e.times(new Decimal(1).plus(stop))
-          ).toNumber(),
-        );
+      : (side === 'long'
+          ? e.times(new Decimal(1).minus(stop))
+          : e.times(new Decimal(1).plus(stop))
+        ).toNumber();
   const takeLevel =
     take === undefined
       ? undefined
-      : quantize(
-          (side === 'long'
-            ? e.times(new Decimal(1).plus(take))
-            : e.times(new Decimal(1).minus(take))
-          ).toNumber(),
-        );
+      : (side === 'long'
+          ? e.times(new Decimal(1).plus(take))
+          : e.times(new Decimal(1).minus(take))
+        ).toNumber();
   return {
     ...(stopLevel !== undefined ? { stopLevel } : {}),
     ...(takeLevel !== undefined ? { takeLevel } : {}),

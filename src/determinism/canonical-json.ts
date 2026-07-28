@@ -29,7 +29,24 @@ function quantizeToString(n: number): string {
   return d.toFixed(); // fixed notation, no trailing zeros, no exponent
 }
 
-/** Quantize a number to the canonical scale (8 places, ROUND_HALF_EVEN) as a `number`. */
+/**
+ * Quantize a number to the canonical scale (8 places, ROUND_HALF_EVEN) as a `number`.
+ *
+ * Волна C: КВАНТИЗАЦИЯ ЖИВЁТ ТОЛЬКО НА ГРАНИЦЕ АРТЕФАКТА.
+ *
+ * Раньше `core/` звал `quantize` после каждой арифметической операции — 6–12 раз на бар, и каждый
+ * раз это был полный круг `new Decimal(n).toDecimalPlaces(8).toFixed()` → строка → `Number`.
+ * Детерминизм при этом покупался на гранулярности бара, а наблюдаем он только здесь: `serialize`
+ * ниже квантует КАЖДОЕ число артефакта в любом случае. То есть пербарная подрезка не давала
+ * артефакту ничего, чего не даёт сама сериализация, — она лишь меняла последующую арифметику.
+ *
+ * Теперь симуляция считает в полной точности `Decimal`, а 8 знаков появляются один раз, при записи
+ * артефакта. Это сдвигает значения в последнем разряде — ровно тот сдвиг, ради которого волна
+ * затевалась, и он проверяется differential-харнессом, а не принимается на веру.
+ *
+ * `quantize` остаётся экспортом: он часть контракта пакета и нужен потребителям, которым надо
+ * привести число к канонической шкале ВНЕ сериализации.
+ */
 export function quantize(n: number): number {
   return Number(quantizeToString(n));
 }

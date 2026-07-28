@@ -109,9 +109,14 @@ describe('execution simulator', () => {
     expect(exec.computeOpenFill('long', 100, 1_000).fee).toBe(quantize(1_000 * 0.001));
   });
 
-  it('derives size from the notional and the filled price', () => {
+  // Волна C: внутри симуляции числа живут в ПОЛНОЙ точности, а 8 знаков появляются один раз —
+  // при сериализации артефакта. Тест закрепляет обе половины этого инварианта: без второй он
+  // разрешал бы молча потерять квантизацию совсем.
+  it('derives size from the notional and the filled price, unrounded inside the engine', () => {
     const fill = exec.computeOpenFill('long', 100, 1_000);
-    expect(fill.size).toBe(quantize(1_000 / (100 * 1.0005)));
+    expect(fill.size).toBe(1_000 / (100 * 1.0005));
+    // Ровно то значение, которое раньше подрезалось пербарно, — теперь оно появляется на границе.
+    expect(quantize(fill.size)).toBe(9.9950025);
   });
 
   it('throws when funding is read on a model that declares none', () => {

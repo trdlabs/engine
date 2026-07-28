@@ -16,7 +16,6 @@
 
 import { Decimal } from 'decimal.js';
 
-import { quantize } from '../determinism/canonical-json.js';
 import type { CloseReason, Trade } from '../trace/artifacts.js';
 
 /**
@@ -82,7 +81,7 @@ export class Portfolio {
   private _closeSeq = 0;
 
   constructor(initialEquity: number) {
-    this._cash = quantize(initialEquity);
+    this._cash = initialEquity;
   }
 
   get cash(): number {
@@ -119,7 +118,7 @@ export class Portfolio {
 
   /** Mark-to-market equity: `cash + unrealized(mark)`. The base for `equity_pct` sizing. */
   equityAt(mark: number): number {
-    return quantize(new Decimal(this._cash).plus(this.grossUnrealized(mark)).toNumber());
+    return new Decimal(this._cash).plus(this.grossUnrealized(mark)).toNumber();
   }
 
   /**
@@ -131,10 +130,10 @@ export class Portfolio {
   settleFunding(cost: number): void {
     const pos = this._position;
     if (pos === null) throw new Error('Portfolio.settleFunding: no open position');
-    this._cash = quantize(new Decimal(this._cash).minus(cost).toNumber());
+    this._cash = new Decimal(this._cash).minus(cost).toNumber();
     this._position = {
       ...pos,
-      fundingAccrued: quantize(new Decimal(pos.fundingAccrued).plus(cost).toNumber()),
+      fundingAccrued: new Decimal(pos.fundingAccrued).plus(cost).toNumber(),
     };
   }
 
@@ -166,7 +165,7 @@ export class Portfolio {
     if (order === null || order.intent !== 'open') {
       throw new Error('Portfolio.settleOpen: no open pending');
     }
-    this._cash = quantize(new Decimal(this._cash).minus(fill.fee).toNumber());
+    this._cash = new Decimal(this._cash).minus(fill.fee).toNumber();
     this._position = {
       symbol: order.symbol,
       side: order.side,
@@ -206,20 +205,18 @@ export class Portfolio {
   settleAdd(fill: OpenFill): void {
     const pos = this._position;
     if (pos === null) throw new Error('Portfolio.settleAdd: no open position');
-    const newSize = quantize(new Decimal(pos.size).plus(fill.size).toNumber());
-    const newEntry = quantize(
-      new Decimal(pos.entryPrice)
-        .times(pos.size)
-        .plus(new Decimal(fill.fillPrice).times(fill.size))
-        .div(newSize)
-        .toNumber(),
-    );
-    this._cash = quantize(new Decimal(this._cash).minus(fill.fee).toNumber());
+    const newSize = new Decimal(pos.size).plus(fill.size).toNumber();
+    const newEntry = new Decimal(pos.entryPrice)
+      .times(pos.size)
+      .plus(new Decimal(fill.fillPrice).times(fill.size))
+      .div(newSize)
+      .toNumber();
+    this._cash = new Decimal(this._cash).minus(fill.fee).toNumber();
     this._position = {
       ...pos,
       size: newSize,
       entryPrice: newEntry,
-      entryFee: quantize(new Decimal(pos.entryFee).plus(fill.fee).toNumber()),
+      entryFee: new Decimal(pos.entryFee).plus(fill.fee).toNumber(),
       addCount: (pos.addCount ?? 0) + 1,
     };
     this._pending = null;
@@ -244,7 +241,7 @@ export class Portfolio {
   closedSizeAt(fraction: number): number {
     const pos = this._position;
     if (pos === null) throw new Error('Portfolio.closedSizeAt: no open position');
-    return fraction < 1 ? quantize(new Decimal(pos.size).times(fraction).toNumber()) : pos.size;
+    return fraction < 1 ? new Decimal(pos.size).times(fraction).toNumber() : pos.size;
   }
 
   /**
@@ -262,21 +259,23 @@ export class Portfolio {
     const isPartial = fraction < 1;
     const closedSize = this.closedSizeAt(fraction);
     const entryFeeClosed = isPartial
-      ? quantize(new Decimal(pos.entryFee).times(fraction).toNumber())
+      ? new Decimal(pos.entryFee).times(fraction).toNumber()
       : pos.entryFee;
     const fundingClosed = isPartial
-      ? quantize(new Decimal(pos.fundingAccrued).times(fraction).toNumber())
+      ? new Decimal(pos.fundingAccrued).times(fraction).toNumber()
       : pos.fundingAccrued;
     const gross = this.grossAtSize(pos.side, pos.entryPrice, fill.fillPrice, closedSize);
-    this._cash = quantize(new Decimal(this._cash).plus(gross).minus(fill.fee).toNumber());
+    this._cash = new Decimal(this._cash).plus(gross).minus(fill.fee).toNumber();
 
     const closeSeq = this._closeSeq;
     this._closeSeq = closeSeq + 1;
 
-    const feePaid = quantize(new Decimal(entryFeeClosed).plus(fill.fee).toNumber());
-    const realizedPnl = quantize(
-      new Decimal(gross).minus(entryFeeClosed).minus(fill.fee).minus(fundingClosed).toNumber(),
-    );
+    const feePaid = new Decimal(entryFeeClosed).plus(fill.fee).toNumber();
+    const realizedPnl = new Decimal(gross)
+      .minus(entryFeeClosed)
+      .minus(fill.fee)
+      .minus(fundingClosed)
+      .toNumber();
     const isProtection = closeReason === 'stop_hit' || closeReason === 'take_hit';
     const isRich = isPartial || isProtection || closeSeq > 0;
     const baseId = `trade-${pos.symbol}-${pos.entryBarIndex}-${fill.barIndex}`;
@@ -305,11 +304,9 @@ export class Portfolio {
     if (isPartial) {
       this._position = {
         ...pos,
-        size: quantize(new Decimal(pos.size).minus(closedSize).toNumber()),
-        entryFee: quantize(new Decimal(pos.entryFee).minus(entryFeeClosed).toNumber()),
-        fundingAccrued: quantize(
-          new Decimal(pos.fundingAccrued).minus(fundingClosed).toNumber(),
-        ),
+        size: new Decimal(pos.size).minus(closedSize).toNumber(),
+        entryFee: new Decimal(pos.entryFee).minus(entryFeeClosed).toNumber(),
+        fundingAccrued: new Decimal(pos.fundingAccrued).minus(fundingClosed).toNumber(),
       };
     } else {
       this._position = null;
@@ -336,6 +333,6 @@ export class Portfolio {
       side === 'long'
         ? new Decimal(exitPrice).minus(entryPrice)
         : new Decimal(entryPrice).minus(exitPrice);
-    return quantize(d.times(size).toNumber());
+    return d.times(size).toNumber();
   }
 }

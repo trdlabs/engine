@@ -29,7 +29,7 @@ import type {
   StrategyModule,
   Tape,
 } from '../contract/index.js';
-import { canonicalJson, quantize } from '../determinism/canonical-json.js';
+import { canonicalJson } from '../determinism/canonical-json.js';
 import { contentRef } from '../determinism/hash.js';
 import { createSeededRng } from '../determinism/rng.js';
 import type {
@@ -83,10 +83,16 @@ export const TRACE_FORMAT_VERSION = '1';
  *
  * So: bump this when, and ONLY when, execution semantics change. `refresh-expectations` enforces
  * the converse — moving the anchor without moving this constant is rejected — so the two cannot
- * drift apart in either direction. The value stays `0.0.0` because the semantics frozen on
- * 2026-07-25 have not changed since; a release does not touch it.
+ * drift apart in either direction. A release does not touch it.
+ *
+ * `0.1.0` (волна C, 2026-07-28): квантизация ушла из горячего цикла на границу артефакта.
+ * Симуляция считает в полной точности `Decimal`, 8 знаков появляются один раз — при сериализации.
+ * Форма трейса НЕ изменилась, поэтому `traceFormatVersion` остался `1`; изменились значения в
+ * последнем разряде. Сдвиг измерен differential-харнессом на замороженных лентах ДО этого бампа
+ * (чтобы отделить численный эффект от смены версии в самом трейсе): ноль структурных расхождений,
+ * максимальный относительный сдвиг 4.49e-10, последовательность решений и состав сделок совпали.
  */
-export const ENGINE_VERSION = '0.0.0';
+export const ENGINE_VERSION = '0.1.0';
 
 /** Everything a run binds. */
 export interface RunRequest {
@@ -464,17 +470,15 @@ export function simulate(request: RunRequest): CanonicalTrace {
       const pos = portfolio.position;
       const rate8h = tape.market?.funding8h?.[t];
       const covered = rate8h !== undefined;
-      const cost = quantize(
-        computeBarFunding({
-          side: pos.side,
-          size: pos.size,
-          mark: bar.close,
-          rate8h: covered ? rate8h : 0,
-          covered,
-          barMinutes: cadenceMinutes,
-          intervalHours: exec.fundingIntervalHours(),
-        }).toNumber(),
-      );
+      const cost = computeBarFunding({
+        side: pos.side,
+        size: pos.size,
+        mark: bar.close,
+        rate8h: covered ? rate8h : 0,
+        covered,
+        barMinutes: cadenceMinutes,
+        intervalHours: exec.fundingIntervalHours(),
+      }).toNumber();
       portfolio.settleFunding(cost);
       acc.fundingLedger.push({ barIndex: t, ts: bar.ts, rate: covered ? rate8h : 0, covered, cost });
     }
@@ -498,7 +502,7 @@ export function simulate(request: RunRequest): CanonicalTrace {
   }
 
   const finalEquity =
-    bars.length > 0 ? portfolio.equityAt(bars[bars.length - 1].close) : quantize(initialEquity);
+    bars.length > 0 ? portfolio.equityAt(bars[bars.length - 1].close) : initialEquity;
 
   const trace: CanonicalTrace = {
     traceFormatVersion: TRACE_FORMAT_VERSION,
@@ -513,7 +517,7 @@ export function simulate(request: RunRequest): CanonicalTrace {
       strategyRef: { id: strategy.id, version: strategy.version },
       riskProfileRef: { id: riskProfile.id, version: riskProfile.version },
       realityModelRef: { id: realityModel.id, version: realityModel.version },
-      initialEquity: quantize(initialEquity),
+      initialEquity,
     },
     orders: acc.orders,
     fills: acc.fills,
