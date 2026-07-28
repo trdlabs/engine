@@ -1,7 +1,7 @@
 {
   "status": "FROZEN",
   "frozenOn": "2026-07-25",
-  "engineVersion": "0.1.0",
+  "engineVersion": "0.2.0",
   "note": "BINDING. Owner decision (A) on run identity (2026-07-25) unblocked the freeze: these refs are the parity anchor, not a change detector. A mismatch is a failure until proven to be an intended semantics change — which means an SSOT edit, an engine version bump, and a reviewed `--force` refresh in the same change. See docs/run-identity.md.",
   "realityModel": "standard_no_funding@1 (standard@1 without the funding slot — these tapes carry no funding column)",
   "entries": [
@@ -9,7 +9,7 @@
       "tape": "t1-slice-a",
       "bundle": "sma_cross+equity_pct",
       "tapeRef": "sha256:c785b7e36e2bdaee91ebfa272f66200a49a083a7329bc5e3318939d8b20502fe",
-      "traceRef": "sha256:1db9ced0ee675b003a069ee9c85f31bfe8d7d1c90fa7c794a53d3ac971d46df1",
+      "traceRef": "sha256:710d4095fc9ca0887fd02c8ef6d3c810595a7e3866e4ca0be59f81c4b2a66e84",
       "closedTrades": 6,
       "finalEquity": 9412.923282605694
     },
@@ -17,15 +17,15 @@
       "tape": "t1-slice-a",
       "bundle": "sma_cross+fixed_usd",
       "tapeRef": "sha256:c785b7e36e2bdaee91ebfa272f66200a49a083a7329bc5e3318939d8b20502fe",
-      "traceRef": "sha256:1def65b0a569950329a673228533d9946de593e7ae9da1d321a5ea722ebcfd27",
+      "traceRef": "sha256:6ec5a4a10bf452e50c201a9ae955d9c173f77cae096cf985140f550003fafe8e",
       "closedTrades": 6,
-      "finalEquity": 9699.875642740553
+      "finalEquity": 9699.875642740555
     },
     {
       "tape": "t1-slice-a",
       "bundle": "always_flat",
       "tapeRef": "sha256:c785b7e36e2bdaee91ebfa272f66200a49a083a7329bc5e3318939d8b20502fe",
-      "traceRef": "sha256:25b218e1c5f6ff8393b59a4308d034eb9f2609b380f76f0f0e9857ed2bd96e2b",
+      "traceRef": "sha256:12481a49b9001f7a140a441d3e2b75461cf8132bdb668d360f3a74d621db3f59",
       "closedTrades": 0,
       "finalEquity": 10000
     },
@@ -33,7 +33,7 @@
       "tape": "t1-slice-b",
       "bundle": "sma_cross+equity_pct",
       "tapeRef": "sha256:ced6fcb2689faccdf025a3684684e8530e043b34fb400a53d686a509ddcdf36e",
-      "traceRef": "sha256:a8b398dca94c3e2cd8d39be54190e1c4db4e3af05ae064ebba21e952cbe72bac",
+      "traceRef": "sha256:abe70199dc02afeffe6ed1d920a3b2a9aac4a7fdedbc494638c710f88781da9b",
       "closedTrades": 2,
       "finalEquity": 9678.088088859713
     },
@@ -41,7 +41,7 @@
       "tape": "t1-slice-b",
       "bundle": "sma_cross+fixed_usd",
       "tapeRef": "sha256:ced6fcb2689faccdf025a3684684e8530e043b34fb400a53d686a509ddcdf36e",
-      "traceRef": "sha256:cd164734f48b096e05584ad63382de724c9d4aad5d032bc9d41cff8915abe12e",
+      "traceRef": "sha256:0853f917d8acf66b6add566e17740cc92795c9218119016375371e949ffc77e4",
       "closedTrades": 2,
       "finalEquity": 9837.727425
     },
@@ -49,7 +49,7 @@
       "tape": "t1-slice-b",
       "bundle": "always_flat",
       "tapeRef": "sha256:ced6fcb2689faccdf025a3684684e8530e043b34fb400a53d686a509ddcdf36e",
-      "traceRef": "sha256:8b4804dc4d107593f22d6ad7d23c3ac222ed391c71b8c0203fb19381a9478c91",
+      "traceRef": "sha256:6c70052e7855c51cd54ddcbef1c29efaf66b8274ce5ff71807e4eab1770bf672",
       "closedTrades": 0,
       "finalEquity": 10000
     },
@@ -57,15 +57,15 @@
       "tape": "t2-slice-a",
       "bundle": "sma_cross+equity_pct",
       "tapeRef": "sha256:cb33643e5b6d166e3fc66aed655052e62478f2486d0837b624236c3d9f68c174",
-      "traceRef": "sha256:c219c060458546a81a466c7df11c9b029ef9fedd7a5d52e38c45c376a9de802d",
+      "traceRef": "sha256:72cabacc3c469cee1727dcb45847e7c1f0aae7eca8cb06e36d254530c73b8a45",
       "closedTrades": 6,
-      "finalEquity": 10076.39074713752
+      "finalEquity": 10076.390747137519
     },
     {
       "tape": "t2-slice-a",
       "bundle": "sma_cross+fixed_usd",
       "tapeRef": "sha256:cb33643e5b6d166e3fc66aed655052e62478f2486d0837b624236c3d9f68c174",
-      "traceRef": "sha256:b8e7b86fa209f80ea14ad2f287d25ebef97f122fae2b7c23d748491c5f31240a",
+      "traceRef": "sha256:5618c0dd3e07eec3dcfd61f563b604236cdfc8f60055ef7bc4ff5b1697b89840",
       "closedTrades": 6,
       "finalEquity": 10038.905238957037
     },
@@ -73,7 +73,7 @@
       "tape": "t2-slice-a",
       "bundle": "always_flat",
       "tapeRef": "sha256:cb33643e5b6d166e3fc66aed655052e62478f2486d0837b624236c3d9f68c174",
-      "traceRef": "sha256:57aa17cb91f1f50df06e919d2f9c523c258423e689d7354ce22256a372210602",
+      "traceRef": "sha256:2bca76ad6b137c4d7313aec123e74f2ccb8e5135d88e4d292ff3e46e6ba19975",
       "closedTrades": 0,
       "finalEquity": 10000
     }

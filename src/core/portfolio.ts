@@ -15,7 +15,7 @@
 // `synthetic: 'end_of_data'` so metrics and reconciliation can exclude it.
 
 
-import { add, addSub, diffTimes, mul, subAll, sub, weightedPrice } from './money.js';
+import { add, addF64, addSub, diffTimesF64, mul, subAll, sub, weightedPrice } from './money.js';
 
 import type { CloseReason, Trade } from '../trace/artifacts.js';
 
@@ -117,9 +117,16 @@ export class Portfolio {
     );
   }
 
-  /** Mark-to-market equity: `cash + unrealized(mark)`. The base for `equity_pct` sizing. */
+  /**
+   * Mark-to-market equity: `cash + unrealized(mark)`. The base for `equity_pct` sizing.
+   *
+   * E3: сложение во float64. Это наблюдение, а не состояние — сумма никуда не записывается и в
+   * следующий бар не переносится, она пересчитывается заново из `cash` (он живёт в Decimal) и
+   * свежего нереализованного PnL. Ошибке представления негде накопиться. Разбор — блок «FLOAT64»
+   * в `money.ts`.
+   */
   equityAt(mark: number): number {
-    return add(this._cash, this.grossUnrealized(mark));
+    return addF64(this._cash, this.grossUnrealized(mark));
   }
 
   /**
@@ -322,8 +329,10 @@ export class Portfolio {
     exitPrice: number,
     size: number,
   ): number {
+    // E3: две операции во float64. Результат либо уходит в артефакт (где квантуется до 8 знаков в
+    // любом случае), либо один раз входит в кассу при закрытии сделки — цепочки нет.
     return side === 'long'
-      ? diffTimes(exitPrice, entryPrice, size)
-      : diffTimes(entryPrice, exitPrice, size);
+      ? diffTimesF64(exitPrice, entryPrice, size)
+      : diffTimesF64(entryPrice, exitPrice, size);
   }
 }
