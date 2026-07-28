@@ -20,7 +20,6 @@ import type {
   RiskProfile,
   StrategyDecision,
 } from '../contract/index.js';
-import { quantize } from '../determinism/canonical-json.js';
 import type { RiskClamp, RiskDecision } from '../trace/artifacts.js';
 
 /** Outcome of a risk evaluation. */
@@ -71,7 +70,7 @@ export class RiskEngine {
         ? new Decimal(sizing.usd)
         : new Decimal(equity).times(sizing.pct);
     const cap = new Decimal(equity).times(this.profile.exposureLimits.maxPositionNotionalPct);
-    return quantize(Decimal.min(raw, cap).toNumber());
+    return Decimal.min(raw, cap).toNumber();
   }
 
   private normHint(value: number | undefined, bounds?: Bounds): number | undefined {
@@ -300,7 +299,7 @@ export class RiskEngine {
     const allowedPct = Math.min(requestedPct, limits.maxAddNotionalPct, totalRemainingPct);
     if (allowedPct <= 0) return reject(limitExceeded);
 
-    const notional = quantize(new Decimal(ctx.equity).times(allowedPct).toNumber());
+    const notional = new Decimal(ctx.equity).times(allowedPct).toNumber();
     if (!(notional > 0)) return reject(limitExceeded);
 
     if (allowedPct < requestedPct) {

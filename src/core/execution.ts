@@ -19,7 +19,6 @@ import type {
   OpenFillCalc,
   RealityModel,
 } from '../contract/index.js';
-import { quantize } from '../determinism/canonical-json.js';
 import { assertRealityModelSupported } from '../reality/catalog.js';
 
 const BPS_DENOM = 10_000;
@@ -83,11 +82,11 @@ export class ExecutionSimulator implements ExecutionPort {
     const fp = this.fillPrice(isBuy, base);
     const n = new Decimal(notional);
     return {
-      fillPrice: quantize(fp.toNumber()),
-      baseOpen: quantize(base),
+      fillPrice: fp.toNumber(),
+      baseOpen: base,
       slippageBps: this.slippageBps,
-      fee: quantize(this.fee(n).toNumber()),
-      size: quantize(n.div(fp).toNumber()),
+      fee: this.fee(n).toNumber(),
+      size: n.div(fp).toNumber(),
     };
   }
 
@@ -96,10 +95,10 @@ export class ExecutionSimulator implements ExecutionPort {
     const isBuy = side === 'short';
     const fp = this.fillPrice(isBuy, base);
     return {
-      fillPrice: quantize(fp.toNumber()),
-      baseOpen: quantize(base),
+      fillPrice: fp.toNumber(),
+      baseOpen: base,
       slippageBps: this.slippageBps,
-      fee: quantize(this.fee(fp.times(size)).toNumber()),
+      fee: this.fee(fp.times(size)).toNumber(),
     };
   }
 
