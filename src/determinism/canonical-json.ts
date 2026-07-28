@@ -19,10 +19,34 @@ Decimal.set({ rounding: Decimal.ROUND_HALF_EVEN });
 /** Fixed quantization scale for numeric fields (decimal places). */
 const SCALE = 8;
 
-/** Quantize a number to its canonical string: 8 places, `-0 → 0`, fixed (non-exponential). */
+/**
+ * Quantize a number to its canonical string: 8 places, `-0 → 0`, fixed (non-exponential).
+ *
+ * E1 — БЫСТРЫЙ ПУТЬ ДЛЯ ЧИСЕЛ, УЖЕ ТОЧНО ПРЕДСТАВИМЫХ НА ШКАЛЕ.
+ *
+ * `decimal.js` строит значение из `String(n)` — из кратчайшего представления, которое
+ * round-trip'ится обратно в то же самое число. Значит, когда это представление и так короче
+ * восьми знаков после запятой и записано без экспоненты, весь круг «строка → Decimal →
+ * toDecimalPlaces → toFixed → строка» возвращает РОВНО исходную строку: округлять нечего,
+ * переводить в фиксированную нотацию нечего. Такие числа — большинство артефакта: индексы баров,
+ * метки времени, размеры, цены с биржевым тиком.
+ *
+ * Условие быстрого пути ровно это и проверяет, и оно намеренно консервативно:
+ *   - есть `e` ⇒ медленный путь (`1e-7` обязано стать `0.0000001`, `1e21` — развернуться);
+ *   - дробная часть длиннее `SCALE` ⇒ медленный путь (есть что округлять по HALF_EVEN).
+ * `-0` отдельным случаем не нужен: `String(-0)` в JS и так `"0"`.
+ *
+ * Значений это не двигает — обе ветки обязаны давать одну строку, и это проверяется тестом
+ * (`canonical-json-fast-path.test.ts`) на кромках и на выборке случайных величин, а не рассуждением.
+ */
 function quantizeToString(n: number): string {
   if (!Number.isFinite(n)) {
     throw new Error(`canonical-json: non-finite number not allowed (got ${n})`);
+  }
+  const s = String(n);
+  if (!s.includes('e')) {
+    const dot = s.indexOf('.');
+    if (dot < 0 || s.length - dot - 1 <= SCALE) return s;
   }
   let d = new Decimal(n).toDecimalPlaces(SCALE, Decimal.ROUND_HALF_EVEN);
   if (d.isZero()) d = new Decimal(0); // normalize `-0 → 0`
