@@ -290,18 +290,18 @@ describe('funding arithmetic', () => {
       barMinutes: 60,
       intervalHours: 8,
     });
-    expect(cost.toNumber()).toBeCloseTo((0.0008 / 480) * 60 * 1_000, 12);
+    expect(cost).toBeCloseTo((0.0008 / 480) * 60 * 1_000, 12);
   });
 
   it('credits a short when the rate is positive', () => {
     const long = computeBarFunding({ side: 'long', size: 1, mark: 100, rate8h: 0.001, covered: true, barMinutes: 60, intervalHours: 8 });
     const short = computeBarFunding({ side: 'short', size: 1, mark: 100, rate8h: 0.001, covered: true, barMinutes: 60, intervalHours: 8 });
-    expect(short.toNumber()).toBe(-long.toNumber());
+    expect(short).toBe(-long);
   });
 
   it('charges nothing for an uncovered bar', () => {
     expect(
-      computeBarFunding({ side: 'long', size: 1, mark: 100, rate8h: 0.001, covered: false, barMinutes: 60, intervalHours: 8 }).toNumber(),
+      computeBarFunding({ side: 'long', size: 1, mark: 100, rate8h: 0.001, covered: false, barMinutes: 60, intervalHours: 8 }),
     ).toBe(0);
   });
 });
