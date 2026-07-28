@@ -92,7 +92,7 @@ export const TRACE_FORMAT_VERSION = '1';
  * (чтобы отделить численный эффект от смены версии в самом трейсе): ноль структурных расхождений,
  * максимальный относительный сдвиг 4.49e-10, последовательность решений и состав сделок совпали.
  */
-export const ENGINE_VERSION = '0.1.0';
+export const ENGINE_VERSION = '0.2.0';
 
 /** Everything a run binds. */
 export interface RunRequest {
