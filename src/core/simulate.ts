@@ -478,7 +478,7 @@ export function simulate(request: RunRequest): CanonicalTrace {
         covered,
         barMinutes: cadenceMinutes,
         intervalHours: exec.fundingIntervalHours(),
-      }).toNumber();
+      });
       portfolio.settleFunding(cost);
       acc.fundingLedger.push({ barIndex: t, ts: bar.ts, rate: covered ? rate8h : 0, covered, cost });
     }

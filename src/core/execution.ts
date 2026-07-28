@@ -8,10 +8,15 @@
 //
 // Semantics (SSOT decisions 1/2): market entries/exits decided on the close of bar T settle at
 // `open(T+1)`; slippage moves price against the side (buy `base·(1+bps/1e4)`, sell
-// `base·(1−bps/1e4)`); fee = `notional·bps/1e4`. All money arithmetic is decimal.js; quantization
-// happens at the artifact boundary (SSOT decision 6).
-
-import { Decimal } from 'decimal.js';
+// `base·(1−bps/1e4)`); fee = `notional·bps/1e4`. All money arithmetic goes through `core/money.ts`;
+// quantization happens at the artifact boundary (SSOT decision 6).
+//
+// E2: `decimal.js` здесь больше нет. Раньше приватный `fillPrice` отдавал `Decimal`, а
+// `computeOpenFill`/`computeCloseFill` продолжали на нём считать — из-за этого файл нельзя было
+// перевести на `money.ts` покомпонентно, не сдвинув значений: цена исполнения вышла бы во float64
+// раньше времени. Решение — не дробить выражения, а назвать их целиком: размер считает
+// `sizeAtShiftedPrice`, комиссию закрытия — `feeOnShiftedNotional`. Обе держат полную точность
+// внутри и выходят наружу ровно один раз, как и прежний код.
 
 import type {
   CloseFillCalc,
@@ -20,8 +25,7 @@ import type {
   RealityModel,
 } from '../contract/index.js';
 import { assertRealityModelSupported } from '../reality/catalog.js';
-
-const BPS_DENOM = 10_000;
+import { feeOnShiftedNotional, portionBps, shiftBps, sizeAtShiftedPrice } from './money.js';
 
 /** Simulated-venue execution port driven by a versioned `RealityModel`. */
 export class ExecutionSimulator implements ExecutionPort {
@@ -62,15 +66,9 @@ export class ExecutionSimulator implements ExecutionPort {
     return this.fundingIntervalH;
   }
 
-  /** Fill price with slippage: buys pay more, sells receive less (always adverse to the side). */
-  private fillPrice(isBuy: boolean, base: number): Decimal {
-    const slip = new Decimal(this.slippageBps).div(BPS_DENOM);
-    const b = new Decimal(base);
-    return isBuy ? b.times(slip.plus(1)) : b.times(new Decimal(1).minus(slip));
-  }
-
-  private fee(notional: Decimal): Decimal {
-    return notional.times(new Decimal(this.feeBps).div(BPS_DENOM));
+  /** Направление сдвига цены: покупка платит больше, продажа получает меньше. */
+  private static dirOf(isBuy: boolean): 1 | -1 {
+    return isBuy ? 1 : -1;
   }
 
   /**
@@ -78,27 +76,26 @@ export class ExecutionSimulator implements ExecutionPort {
    * `size = notional / fillPrice`.
    */
   computeOpenFill(side: 'long' | 'short', base: number, notional: number): OpenFillCalc {
-    const isBuy = side === 'long';
-    const fp = this.fillPrice(isBuy, base);
-    const n = new Decimal(notional);
+    const dir = ExecutionSimulator.dirOf(side === 'long');
     return {
-      fillPrice: fp.toNumber(),
+      fillPrice: shiftBps(base, this.slippageBps, dir),
       baseOpen: base,
       slippageBps: this.slippageBps,
-      fee: this.fee(n).toNumber(),
-      size: n.div(fp).toNumber(),
+      fee: portionBps(notional, this.feeBps),
+      // Не `div(notional, fillPrice)`: делить надо на ПОЛНУЮ цену исполнения, а не на её
+      // округлённый отпечаток, который уходит в артефакт строкой выше.
+      size: sizeAtShiftedPrice(notional, base, this.slippageBps, dir),
     };
   }
 
   /** Closing fill. Closing a `long` → sell, a `short` → buy; `notional = fillPrice · size`. */
   computeCloseFill(side: 'long' | 'short', base: number, size: number): CloseFillCalc {
-    const isBuy = side === 'short';
-    const fp = this.fillPrice(isBuy, base);
+    const dir = ExecutionSimulator.dirOf(side === 'short');
     return {
-      fillPrice: fp.toNumber(),
+      fillPrice: shiftBps(base, this.slippageBps, dir),
       baseOpen: base,
       slippageBps: this.slippageBps,
-      fee: this.fee(fp.times(size)).toNumber(),
+      fee: feeOnShiftedNotional(base, this.slippageBps, dir, size, this.feeBps),
     };
   }
 

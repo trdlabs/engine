@@ -124,9 +124,70 @@ export function weightedPrice(priceA: number, qtyA: number, priceB: number, qtyB
  * заданы в bps, поэтому деление на 10 000 живёт здесь, а не у вызывающего.
  */
 export function shiftBps(base: number, bps: number, dir: 1 | -1): number {
+  return new Decimal(base).times(bpsFactor(bps, dir)).toNumber();
+}
+
+/** Множитель сдвига на bps: `1 + dir·bps/10000`. Приватный: наружу уходят только целые выражения. */
+function bpsFactor(bps: number, dir: 1 | -1): Decimal {
   const slip = new Decimal(bps).div(BPS_DENOM);
-  const factor = dir === 1 ? slip.plus(1) : new Decimal(1).minus(slip);
-  return new Decimal(base).times(factor).toNumber();
+  return dir === 1 ? slip.plus(1) : new Decimal(1).minus(slip);
+}
+
+/**
+ * Размер позиции из нотионала по сдвинутой цене: `notional / (base × (1 + dir·bps/10000))`.
+ *
+ * Одним выражением, и это принципиально. Разложение на `div(notional, shiftBps(base, bps, dir))`
+ * вывело бы цену исполнения во float64 ПЕРЕД делением, а она в общем случае непредставима точно —
+ * размер поехал бы в последнем разряде. В артефакт цена уходит округлённой отдельно и позже;
+ * делится полная.
+ */
+export function sizeAtShiftedPrice(notional: number, base: number, bps: number, dir: 1 | -1): number {
+  return new Decimal(notional).div(new Decimal(base).times(bpsFactor(bps, dir))).toNumber();
+}
+
+/**
+ * Комиссия от нотионала по сдвинутой цене:
+ * `base × (1 + dir·slippageBps/10000) × size × feeBps/10000`.
+ *
+ * Составная по той же причине, что и `sizeAtShiftedPrice`: нотионал закрытия считается от полной
+ * цены исполнения, а не от её округлённого отпечатка в артефакте.
+ */
+export function feeOnShiftedNotional(
+  base: number,
+  slippageBps: number,
+  dir: 1 | -1,
+  size: number,
+  feeBps: number,
+): number {
+  return new Decimal(base)
+    .times(bpsFactor(slippageBps, dir))
+    .times(size)
+    .times(new Decimal(feeBps).div(BPS_DENOM))
+    .toNumber();
+}
+
+/**
+ * Стоимость фандинга за один бар одной цепочкой:
+ * `(rate8h / (intervalHours·60)) × barMinutes × (size × mark) × sign`.
+ *
+ * Порядок множителей повторяет прежний дословно. Умножение коммутативно в математике, но не в
+ * `decimal.js`: он округляет до рабочей точности на каждой операции, поэтому перестановка — это
+ * сдвиг значений. `rate8h` — 8-часовой ЭКВИВАЛЕНТ, деление на интервал живёт здесь.
+ */
+export function fundingCost(
+  rate8h: number,
+  intervalHours: number,
+  barMinutes: number,
+  size: number,
+  mark: number,
+  sign: number,
+): number {
+  return new Decimal(rate8h)
+    .div(intervalHours * 60)
+    .times(barMinutes)
+    .times(new Decimal(size).times(mark))
+    .times(sign)
+    .toNumber();
 }
 
 /** Доля от величины в базисных пунктах: `value × bps/10000` (комиссия от нотионала). */
