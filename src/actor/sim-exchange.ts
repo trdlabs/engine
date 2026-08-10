@@ -1,0 +1,133 @@
+// S2 — sim-exchange: матчинг resting-заявок против бара (§3.8.1, §3.9).
+//
+// ДВА НОРМАТИВНЫХ ПРАВИЛА, и оба контринтуитивны ровно настолько, чтобы их потерять.
+//
+// 1. АНТИ-ЛУКАХЕД. Ордер `limit`/`stop`, поданный на баре T, НЕ матчится против бара T — он pending
+//    до следующего. Иначе стратегия, решившая на закрытии свечи T, исполнялась бы по внутрибарным
+//    ценам того же бара, которых в момент решения ещё не существовало. `place(market)` при этом
+//    может отфиллиться немедленно, и его филл каскадит в том же инстанте: рыночная заявка не
+//    выбирает цену, она берёт то, что есть.
+//
+// 2. WORST-CASE, БЕЗ ВЕРОЯТНОСТНЫХ МОДЕЛЕЙ (§3.9). Когда один бар касается и стопа, и тейка,
+//    внутрибарного порядка мы НЕ ЗНАЕМ: OHLC его не содержит. Вероятностная развязка («в 60%
+//    случаев сначала…») подставила бы выдуманное число в детерминированный контур и сделала бы
+//    результат зависимым от параметра, который нечем проверить. Поэтому выбирается ХУДШИЙ для
+//    позиции исход — консервативный и, главное, воспроизводимый.
+//
+//    Отдельная цена такого выбора названа честно: бэктест будет систематически пессимистичнее
+//    реальности на барах-обгонах. Это лучше, чем оптимистичнее: завышенная оценка стратегии стоит
+//    денег, заниженная — упущенной возможности.
+
+import type { TimestampUs } from '../contract/index.js';
+
+/** Бар, против которого идёт матчинг. Все поля обязательны (решение SSOT 7). */
+export interface Bar {
+  readonly tsUs: TimestampUs;
+  readonly open: number;
+  readonly high: number;
+  readonly low: number;
+  readonly close: number;
+}
+
+export type OrderKind = 'market' | 'limit' | 'stop';
+export type Side = 'buy' | 'sell';
+
+/** Resting-заявка. `placedAtTsUs` нужен ровно для анти-лукахеда и без него правило непроверяемо. */
+export interface RestingOrder {
+  readonly orderId: string;
+  readonly kind: OrderKind;
+  readonly side: Side;
+  readonly qty: number;
+  /** Цена срабатывания. Для `market` не применима. */
+  readonly triggerPrice?: number | undefined;
+  /** Бар, на котором заявка подана. */
+  readonly placedAtTsUs: TimestampUs;
+}
+
+export interface Match {
+  readonly orderId: string;
+  readonly price: number;
+  readonly qty: number;
+}
+
+/**
+ * Может ли заявка вообще участвовать в матчинге против этого бара.
+ *
+ * Вынесено отдельной предикатной функцией, а не спрятано в условие внутри цикла: правило
+ * анти-лукахеда — нормативное, и оно должно читаться и проверяться само по себе.
+ */
+export function isEligibleForBar(order: RestingOrder, bar: Bar): boolean {
+  if (order.kind === 'market') return true;
+  return order.placedAtTsUs < bar.tsUs;
+}
+
+/** Сработал ли триггер по диапазону бара. */
+function triggered(order: RestingOrder, bar: Bar): boolean {
+  const p = order.triggerPrice;
+  if (p === undefined) return false;
+  if (order.kind === 'limit') {
+    // Лимит покупки исполняется, если цена опустилась до него; лимит продажи — если поднялась.
+    return order.side === 'buy' ? bar.low <= p : bar.high >= p;
+  }
+  // Стоп покупки срабатывает вверх, стоп продажи — вниз.
+  return order.side === 'buy' ? bar.high >= p : bar.low <= p;
+}
+
+/**
+ * Насколько исход плох для держателя позиции.
+ *
+ * Единственное место, где выражено «худший». Отдельной функцией — чтобы правило было ОДНО и
+ * читалось как правило, а не выводилось из порядка сравнений в трёх ветках.
+ *
+ * Для лонга худшее — исполниться ниже (продали дешевле / купили в невыгодном месте); для шорта —
+ * выше. Здесь `positionSide` это сторона ОТКРЫТОЙ позиции, а не сторона заявки.
+ */
+function badnessForPosition(price: number, positionSide: Side): number {
+  return positionSide === 'buy' ? -price : price;
+}
+
+/**
+ * Сматчить resting-заявки против бара.
+ *
+ * Возвращает МАКСИМУМ ОДИН матч на бар: несколько срабатываний в одном баре означают, что мы не
+ * знаем их порядка, и исполнить их все значило бы придумать порядок. Выбирается худшая для позиции
+ * заявка — то самое worst-case разрешение.
+ *
+ * `positionSide` обязателен: без него «худший» не определён вовсе, и функция, которая берётся
+ * решать это сама, неявно предположила бы направление.
+ */
+export function matchBar(
+  orders: readonly RestingOrder[],
+  bar: Bar,
+  positionSide: Side,
+): Match | null {
+  const candidates: Match[] = [];
+
+  for (const order of orders) {
+    if (!isEligibleForBar(order, bar)) continue;
+
+    if (order.kind === 'market') {
+      // Рыночная заявка не выбирает цену. Берётся открытие бара: это первая цена, доступная после
+      // момента подачи, и она не заглядывает вперёд.
+      candidates.push({ orderId: order.orderId, price: bar.open, qty: order.qty });
+      continue;
+    }
+    if (!triggered(order, bar)) continue;
+
+    // Исполнение по цене триггера, а не по экстремуму бара: заявка стоит по своей цене, и
+    // исполнение по high/low приписало бы бирже щедрость или жадность, которых нет.
+    candidates.push({ orderId: order.orderId, price: order.triggerPrice!, qty: order.qty });
+  }
+
+  if (candidates.length === 0) return null;
+
+  // Худший исход. При равной цене разводим по orderId — иначе выбор зависел бы от порядка массива,
+  // то есть от порядка постановки заявок, и стал бы невоспроизводимым.
+  let worst = candidates[0]!;
+  for (const c of candidates.slice(1)) {
+    const bc = badnessForPosition(c.price, positionSide);
+    const bw = badnessForPosition(worst.price, positionSide);
+    if (bc > bw || (bc === bw && c.orderId < worst.orderId)) worst = c;
+  }
+  return worst;
+}
