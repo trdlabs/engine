@@ -37,6 +37,38 @@ export type { FeeModel, FillModel, FundingModel, RealityModel, SlippageModel };
 /** Versioned reference to a runner-owned artifact (risk profile, reality model). Contract-owned. */
 export type { Ref };
 
+// ── Время: микросекунды, и ровно одно объявление на экосистему ───────────────
+//
+// 083 S1 сделал µs ЕДИНСТВЕННОЙ единицей времени контракта и выразил её НОМИНАЛЬНЫМИ типами
+// (`TimestampUs`/`DurationUs` поверх `unique symbol`). У номинального типа идентичность задаётся
+// местом объявления: два объявления одинаковой формы — два РАЗНЫХ типа, и значение одного не
+// подходит туда, где ждут другой.
+//
+// Отсюда правило для этого файла, ровно то же, что уже действует для словаря решений: импортировать
+// и реэкспортировать, НИКОГДА не объявлять свою копию. Пересказ здесь выглядел бы безобидно —
+// форма-то совпадает, — но рассыпал бы seam у каждого потребителя, который держит и `@trdlabs/sdk`,
+// и этот пакет. Тот же класс уже стоил трёх копий `DURATION_US` в `@trdlabs/backtester-sdk`.
+//
+// Функции ввода реэкспортируются вместе с типами намеренно: брендированное значение НЕЛЬЗЯ собрать
+// литералом (в том и смысл бренда), поэтому потребитель, получивший от нас тип без конструктора,
+// оказался бы с типом, который не может создать.
+export type { DurationUs, TimestampUs } from '@trdlabs/sdk/research-contract';
+export {
+  MAX_TIMESTAMP_US,
+  MICROS_PER_MILLI,
+  MICROS_PER_MINUTE,
+  MICROS_PER_SECOND,
+  addUs,
+  assertSafeUs,
+  diffUs,
+  durationUs,
+  isDurationUs,
+  isTimestampUs,
+  timestampUs,
+  timestampUsFromMillis,
+  timestampUsToMillis,
+} from '@trdlabs/sdk/research-contract';
+
 /**
  * Base bar of the core (SSOT decision 7): `ts, open, high, low, close, volume` — ALL mandatory.
  * Market extensions (oi / liquidations / funding / taker) live on a separate optional surface with

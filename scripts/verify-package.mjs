@@ -42,18 +42,116 @@ try {
   // Apache-2.0 §4(d): a distribution of a work that carries a NOTICE file must carry it along.
   // Easy to lose, because `files: ["dist"]` only auto-includes LICENSE and README.
 
+  // ── Брендированные типы: одно объявление, а не копия ───────────────────────
+  //
+  // 083 S1 ввёл в `@trdlabs/sdk` номинальные типы (`TimestampUs`/`DurationUs` на `unique symbol`).
+  // У номинального типа идентичность задаётся МЕСТОМ ОБЪЯВЛЕНИЯ: два объявления одинаковой формы —
+  // два разных типа, и значение одного не подходит туда, где ждут другой.
+  //
+  // Этот пакет реэкспортирует словарь контракта наружу (`src/contract/index.ts`), поэтому копия
+  // объявления в его `.d.ts` рассыпала бы seam у каждого потребителя. Проверка не гипотетическая:
+  // в `@trdlabs/backtester-sdk` ровно это и случилось — `bundledPackages` в api-extractor
+  // раскатывал типы ядра независимо по каждой точке входа и дал три отдельных
+  // `declare const DURATION_US: unique symbol`. Здесь сборка идёт голым `tsc`, который не бандлит,
+  // — но «сегодня не бандлит» это свойство конфигурации, а не гарантия: добавленный шаг роллапа
+  // вернул бы дефект молча.
+  const dtsFiles = listed.filter((f) => f.endsWith('.d.ts'));
+  for (const rel of dtsFiles) {
+    const body = run('tar', ['-xzOf', tarball, `package/${rel}`]);
+    if (/\bunique symbol\b/.test(body)) {
+      problems.push(
+        `${rel} DECLARES a \`unique symbol\`. Брендированные типы обязаны ИМПОРТИРОВАТЬСЯ из ` +
+          `@trdlabs/sdk, а не объявляться здесь: копия объявления — отдельная номинальная ` +
+          `идентичность, и значение sdk перестанет подходить туда, где движок ждёт свой тип.`,
+      );
+    }
+  }
+
   // ── The artifact as a consumer actually receives it ────────────────────────
   const project = join(work, 'consumer');
   run('mkdir', ['-p', project]);
+  // Потребитель держит И этот пакет, И `@trdlabs/sdk` напрямую — ровно так живёт backtester.
+  // Односторонняя установка (только движок) не смогла бы показать расхождение идентичностей: оно
+  // возникает именно там, где два пути к одному словарю встречаются в одном дереве.
+  const sdkPin = pkg.dependencies['@trdlabs/sdk'];
   writeFileSync(
     join(project, 'package.json'),
     JSON.stringify(
-      { name: 'engine-clean-consumer', private: true, type: 'module', dependencies: { '@trdlabs/engine': `file:${tarball}` } },
+      {
+        name: 'engine-clean-consumer',
+        private: true,
+        type: 'module',
+        dependencies: { '@trdlabs/engine': `file:${tarball}`, '@trdlabs/sdk': sdkPin },
+        devDependencies: { typescript: pkg.devDependencies.typescript },
+      },
       null,
       2,
     ),
   );
   run('pnpm', ['install', '--ignore-workspace', '--no-frozen-lockfile'], project);
+
+  // ── Одна установка sdk, а не две ───────────────────────────────────────────
+  //
+  // Физический слой того же вопроса: две установки — два места объявления `unique symbol`, значит
+  // два разных номинальных типа при одинаковой форме. Считается по каталогу store, а не по
+  // манифестам: манифест говорит, что попросили, а store — что получилось.
+  const storeEntries = run('ls', [join(project, 'node_modules', '.pnpm')])
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith('@trdlabs+sdk@'));
+  if (storeEntries.length !== 1) {
+    problems.push(
+      `у потребителя ${storeEntries.length} установок @trdlabs/sdk (${storeEntries.join(', ') || 'ни одной'}), ` +
+        `а должна быть ровно одна: каждая копия объявляет свои \`unique symbol\`, и брендированные ` +
+        `типы разных копий не взаимозаменяемы.`,
+    );
+  }
+
+  // ── Номинальная идентичность: проверяется ТИПАМИ, иначе непроверяема ───────
+  //
+  // Рантайм тут бессилен: брендированный `TimestampUs` в рантайме обычное число, и любая проверка
+  // значением пройдёт при любом числе объявлений. Расхождение видно только компилятору, и только
+  // при `skipLibCheck: false` — иначе tsc не заглядывает в `.d.ts` зависимостей и молча пропускает
+  // ровно тот случай, ради которого проверка написана.
+  writeFileSync(
+    join(project, 'tsconfig.json'),
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          skipLibCheck: false,
+          module: 'nodenext',
+          moduleResolution: 'nodenext',
+          target: 'es2022',
+          noEmit: true,
+        },
+        files: ['identity.ts'],
+      },
+      null,
+      2,
+    ),
+  );
+  writeFileSync(
+    join(project, 'identity.ts'),
+    [
+      "import { timestampUs } from '@trdlabs/sdk/research-contract';",
+      "import type { TimestampUs as EngineTimestampUs, DurationUs as EngineDurationUs } from '@trdlabs/engine';",
+      "import { diffUs as engineDiffUs } from '@trdlabs/engine';",
+      '',
+      '// Значение построено словарём ПОТРЕБИТЕЛЯ, а принимается там, где объявлен тип ДВИЖКА.',
+      '// Две копии sdk дали бы здесь ошибку присваивания при совпадающей форме — это и есть',
+      '// разница между структурной и номинальной совместимостью.',
+      'const fromConsumer = timestampUs(1_700_000_000_000_000);',
+      'const asEngine: EngineTimestampUs = fromConsumer;',
+      '',
+      '// И обратно: функция, реэкспортированная движком, принимает значение потребителя и отдаёт',
+      '// тип, который потребитель обязан узнать своим.',
+      'const delta: EngineDurationUs = engineDiffUs(asEngine, fromConsumer);',
+      'void delta;',
+      '',
+    ].join('\n'),
+  );
+  run('pnpm', ['exec', 'tsc', '--noEmit'], project);
 
   // A real run, not just an import: an entrypoint that resolves but throws on first use is still a
   // broken release.
