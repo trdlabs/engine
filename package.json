@@ -36,7 +36,8 @@
     "gate:refresh": "tsx scripts/refresh-expectations.ts",
     "tapes:build": "tsx scripts/build-tapes.ts",
     "verify:package": "node scripts/verify-package.mjs",
-    "verify:workflows": "node scripts/verify-workflows.mjs"
+    "verify:workflows": "node scripts/verify-workflows.mjs",
+    "verify:published": "node scripts/verify-published.mjs"
   },
   "dependencies": {
     "@trdlabs/sdk": "0.14.0",
