@@ -25,7 +25,7 @@
 import { hrtime } from 'node:process';
 import { cpus, hostname, totalmem } from 'node:os';
 import type { MarketDataKind } from '@trdlabs/sdk/research-contract';
-import { applyBatch, type BatchCore, type CascadeBudget, type CascadeCounter, type OutboxEvent } from '../src/actor/batch.js';
+import { applyBatch, deepFreeze, type BatchCore, type CascadeBudget, type CascadeCounter, type OutboxEvent } from '../src/actor/batch.js';
 import { applyFill, EMPTY_LEDGER, type Fill, type Ledger } from '../src/actor/ledger.js';
 import { transition, type OrderState } from '../src/actor/order-fsm.js';
 import { createCheckpointableRng, rngStateFromSeed, type RngState } from '../src/actor/rng.js';
@@ -225,6 +225,70 @@ console.log('kind\tp50_us\tp05_us\tp95_us');
 for (const { label } of KINDS) {
   const { p50, p05, p95 } = measure(label);
   console.log(`${label}\t${p50.toFixed(4)}\t${p05.toFixed(4)}\t${p95.toFixed(4)}`);
+}
+
+// ── Атрибуция: сколько из этого стоит глубокая заморозка ──────────────────────
+//
+// Заморозка добавлена в S2 ради атомарности (отклонённая или упавшая команда не имеет частичных
+// эффектов ПО ПОСТРОЕНИЮ, а не по комментарию). Она обходит состояние на КАЖДУЮ команду, и это
+// прямо противоположно цели мидгейта — поэтому её вклад обязан быть назван числом, а не остаться
+// подозрением.
+//
+// АБСОЛЮТНЫЕ числа тут по-прежнему несравнимы с базой S0 (машина не та), но ОТНОШЕНИЕ двух
+// вариантов на одной машине сравнимо с самим собой — и именно оно отвечает на вопрос «держать
+// заморозку или искать другую форму атомарности».
+{
+  const state = {
+    rng: rngStateFromSeed(1),
+    timers: Array.from({ length: 8 }, (_, i) => ({
+      timerId: `t${i}`,
+      dueTsUs: T,
+      createdAtFrontierUs: T,
+    })),
+    orders: Array.from({ length: 8 }, (_, i) => ({ orderId: `o${i}`, state: 'accepted' as OrderState })),
+    ledger: EMPTY_LEDGER,
+  };
+
+  // ДВА числа, а не одно. Первая редакция этой атрибуции клонировала состояние на каждой итерации
+  // и потому мерила ВСЕГДА холодный случай — то есть завышала, причём ровно после того, как
+  // пропуск замороженных поддеревьев и был добавлен. Число, сделанное неверным собственной
+  // правкой, — тот же класс, что и всё остальное в этом ревью, поэтому здесь оба.
+  const coldSamples: number[] = [];
+  for (let i = 0; i < WARMUP; i += 1) deepFreeze(structuredClone(state));
+  for (let i = 0; i < ITERATIONS; i += 1) {
+    const fresh = structuredClone(state);
+    const t0 = hrtime.bigint();
+    deepFreeze(fresh);
+    const t1 = hrtime.bigint();
+    coldSamples.push(Number(t1 - t0) / 1000);
+  }
+
+  // Тёплый: состояние уже заморожено — так выглядят 4 из 5 вызовов внутри батча, потому что
+  // `apply` возвращает объект, чьи неизменённые поддеревья уже заморожены предыдущим проходом.
+  const warm = deepFreeze(structuredClone(state));
+  const warmSamples: number[] = [];
+  for (let i = 0; i < WARMUP; i += 1) deepFreeze(warm);
+  for (let i = 0; i < ITERATIONS; i += 1) {
+    const t0 = hrtime.bigint();
+    deepFreeze(warm);
+    const t1 = hrtime.bigint();
+    warmSamples.push(Number(t1 - t0) / 1000);
+  }
+
+  const cold = stats(coldSamples);
+  const hot = stats(warmSamples);
+  console.log('#');
+  console.log('# Атрибуция заморозки (та же машина, сравнимо с собой):');
+  console.log(`#   холодная (состояние не заморожено) : p50 ${cold.p50.toFixed(4)} мкс`);
+  console.log(`#   тёплая   (поддерево уже заморожено): p50 ${hot.p50.toFixed(4)} мкс`);
+  console.log('#');
+  console.log('# Внутри батча из 4 команд заморозка зовётся 5 раз: 1 холодный вход + 4 тёплых,');
+  console.log('# потому что `apply` возвращает объект с уже замороженными неизменёнными поддеревьями.');
+  console.log(`# Оценка вклада в один диспатч ≈ ${(cold.p50 + hot.p50 * 4).toFixed(2)} мкс.`);
+  console.log('#');
+  console.log('# ДО пропуска замороженных поддеревьев тёплого случая не было вовсе — каждый из пяти');
+  console.log('# вызовов обходил всё состояние, и вклад составлял почти всю стоимость диспатча,');
+  console.log('# причём рос вместе с накоплением ордеров, таймеров и филлов.');
 }
 
 if (sink === Number.MIN_SAFE_INTEGER) console.log('# (недостижимо; sink удерживает цикл от выбрасывания)');
