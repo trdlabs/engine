@@ -153,10 +153,43 @@ try {
     if (host.phase !== 'boundary') throw new Error('после броска фаза осталась in-frontier');
     if (typeof host.takeCheckpoint(cp) !== 'string') throw new Error('после броска чекпойнт не разрешён');
 
+    // ── АСИНХРОННАЯ ФОРМА ─────────────────────────────────────────────────────
+    //
+    // Именно её берёт настоящий хост: барный цикл потребителя асинхронен по существу — стратегия
+    // исполняется за границей песочницы. Гейты релиза проверяли ТОЛЬКО синхронную форму, то есть
+    // доказывали свойства пути, которым никто не пойдёт, и молчали про тот, которым пойдут все.
+    if (await host.runFrontierAsync(1, async () => { await null; return host.phase; }) !== 'in-frontier') {
+      throw new Error('async: фаза не удержана ПОСЛЕ await — frontier закрылся, пока работа в полёте');
+    }
+    if (host.phase !== 'boundary') throw new Error('async: frontier не закрыт после успешного тела');
+
+    let asyncRefused = false;
+    try { await host.runFrontierAsync(1, async () => { await null; return host.takeCheckpoint(cp); }); }
+    catch (e) { asyncRefused = e instanceof engine.CheckpointBoundaryViolation; }
+    if (!asyncRefused) throw new Error('async: чекпойнт ПРОШЁЛ после await внутри frontier');
+
+    // Вложенный вызов обязан бросить СИНХРОННО: у полностью async-функции он приезжал бы отказом
+    // промиса, и вызывающий, забывший await, получил бы unhandled rejection вместо ошибки на месте.
+    const inFlight = host.runFrontierAsync(1, async () => { await null; return 1; });
+    let nestedThrewSync = false;
+    try { host.runFrontierAsync(1, async () => 2); } catch (e) {
+      nestedThrewSync = e instanceof engine.CheckpointBoundaryViolation;
+    }
+    await inFlight;
+    if (!nestedThrewSync) throw new Error('async: вложенный frontier не бросил СИНХРОННО');
+
+    const asyncBoom = new Error('async boom');
+    let asyncOriginal;
+    try { await host.runFrontierAsync(1, async () => { await null; throw asyncBoom; }); }
+    catch (e) { asyncOriginal = e; }
+    if (asyncOriginal !== asyncBoom) throw new Error('async: исходный отказ тела подменён');
+    if (host.phase !== 'boundary') throw new Error('async: после rejection фаза осталась in-frontier');
+    if (typeof host.takeCheckpoint(cp) !== 'string') throw new Error('async: после rejection чекпойнт не разрешён');
+
     if (engine.TRACE_FORMAT_VERSION !== '2') {
       throw new Error('опубликованный TRACE_FORMAT_VERSION = ' + engine.TRACE_FORMAT_VERSION + ', ожидалось 2');
     }
-    console.log('  ✓ актор-поверхность работает из опубликованного тарболла (' + required.length + ' экспортов)');
+    console.log('  ✓ актор-поверхность работает из опубликованного тарболла (' + required.length + ' экспортов, sync и async)');
     console.log('  ✓ canonical trace format = ' + engine.TRACE_FORMAT_VERSION);
   `;
   writeFileSync(join(work, 'smoke.mjs'), smoke);
