@@ -144,14 +144,19 @@ export {
   type SlotViolation,
 } from './actor/checkpoint.js';
 
-// Гейт границы frontier. Единственная дверь к записи чекпойнта — свободного кодировщика в
-// поверхности пакета НЕТ намеренно (решение владельца S2-D1, п. 2).
+// Оркестратор frontier'а — ЕДИНСТВЕННАЯ дверь и к исполнению frontier, и к записи чекпойнта.
+//
+// Свободного кодировщика в поверхности нет с S2 (решение владельца S2-D1, п. 2). С S3 нет и
+// свободной пары «открыть/закрыть»: `createCheckpointGate` сознательно НЕ экспортируется. Гейт,
+// которому фазу сообщают отдельным вызовом, связывает только того, кто сообщил, — хост, забывший
+// уведомить, видит фазу `boundary` весь прогон и обходит политику формально. Единственная точка
+// входа принимает тело frontier и владеет парой сама.
 export {
   CheckpointBoundaryViolation,
-  createCheckpointGate,
-  type CheckpointGate,
+  createActorHost,
+  type ActorHost,
   type FrontierPhase,
-} from './actor/checkpoint-gate.js';
+} from './actor/actor-host.js';
 
 export {
   TRACE_FORMAT_MS,

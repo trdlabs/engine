@@ -96,7 +96,7 @@ try {
       'matchBar', 'isEligibleForBar',
       'createCheckpointableRng', 'rngStateFromSeed', 'isRngState',
       'restore', 'replaceAuthorState', 'validateAuthorState',
-      'createCheckpointGate', 'CheckpointBoundaryViolation',
+      'createActorHost', 'CheckpointBoundaryViolation',
       'traceToMicroseconds', 'traceToMillisProjection',
     ];
     const missing = required.filter((n) => engine[n] === undefined);
@@ -104,24 +104,33 @@ try {
     if (engine.encodeCheckpoint !== undefined) {
       throw new Error('в опубликованном пакете снова есть свободный encodeCheckpoint — граница чекпойнта обходима');
     }
+    if (engine.createCheckpointGate !== undefined) {
+      throw new Error('в опубликованном пакете снова есть createCheckpointGate — frontier исполним мимо гейта');
+    }
 
     const ordered = engine.orderFrontier(
       [{ businessTsUs: 1, phase: 'execution', stableSubscriptionId: 's', sourceSequence: 0, payload: 1 }], 7);
     if (ordered[0].seq !== 7) throw new Error('orderFrontier не принял startSeq через опубликованный путь');
 
-    const gate = engine.createCheckpointGate();
+    const host = engine.createActorHost();
     const cp = {
       identity: { bundleDigest: 'd', contractVersion: 'c', engineVersion: 'e', projectionVersion: 'p' },
       authorState: {},
       engineState: { rng: engine.rngStateFromSeed(1), timers: [], orders: [], ledger: engine.EMPTY_LEDGER, lastCommittedSeq: -1 },
       projectionRecoveryState: { boundedHistory: [], indicatorAccumulators: {} },
     };
-    if (typeof gate.takeCheckpoint(cp) !== 'string') throw new Error('гейт не отдал чекпойнт на границе');
-    gate.openFrontier(1);
+    if (typeof host.takeCheckpoint(cp) !== 'string') throw new Error('хост не отдал чекпойнт на границе');
+    if (host.openFrontier !== undefined || host.closeFrontier !== undefined) {
+      throw new Error('у опубликованного хоста есть свободная пара открыть/закрыть');
+    }
     let refused = false;
-    try { gate.takeCheckpoint(cp); } catch (e) { refused = e instanceof engine.CheckpointBoundaryViolation; }
-    if (!refused) throw new Error('опубликованный гейт ПРОПУСТИЛ чекпойнт внутри открытого frontier');
-    gate.closeFrontier();
+    try { host.runFrontier(1, () => host.takeCheckpoint(cp)); } catch (e) { refused = e instanceof engine.CheckpointBoundaryViolation; }
+    if (!refused) throw new Error('опубликованный хост ПРОПУСТИЛ чекпойнт внутри открытого frontier');
+    try { host.runFrontier(1, () => { throw new Error('boom'); }); } catch (e) {
+      if (e.message !== 'boom') throw new Error('исходный отказ тела подменён: ' + e.message);
+    }
+    if (host.phase !== 'boundary') throw new Error('после броска фаза осталась in-frontier');
+    if (typeof host.takeCheckpoint(cp) !== 'string') throw new Error('после броска чекпойнт не разрешён');
 
     if (engine.TRACE_FORMAT_VERSION !== '2') {
       throw new Error('опубликованный TRACE_FORMAT_VERSION = ' + engine.TRACE_FORMAT_VERSION + ', ожидалось 2');
