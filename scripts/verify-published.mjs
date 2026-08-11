@@ -41,34 +41,54 @@ const run = (cmd, args, cwd) => spawnSync(cmd, args, { cwd, encoding: 'utf8' });
 
 console.log(`verify-published: ${NAME}@${VERSION} (ожидаемый пин ${SDK}@${EXPECTED_SDK})`);
 
-// ── 1. Версия доступна в реестре ─────────────────────────────────────────────
+// ── Чтение реестра сразу после публикации: ОДИН retry на всех ────────────────
 //
-// С ОГРАНИЧЕННЫМ RETRY, и это не перестраховка. Первая редакция спрашивала реестр один раз и
-// уронила релиз 0.5.0: пакет был опубликован, провенанс приложен, а `npm view` ещё отдавал 404 —
-// чтение packument'а отстаёт от записи. Соседний шаг workflow ровно поэтому давно ходит с retry,
-// и я на это сослался, решив, что к моему шагу реестр «успевает устояться». Вывод неверен:
-// провенанс и packument — разные сервисы, и согласованность одного ничего не говорит о другом.
+// ПОЧЕМУ ЭТО ОБЩИЙ ХЕЛПЕР, А НЕ ЦИКЛ НА МЕСТЕ. Дефект «спросил реестр один раз сразу после
+// публикации» случился здесь ДВАЖДЫ, и второй раз — в скрипте, который я только что правил от
+// первого. Релиз 0.5.0 упал на packument'е (`npm view` ещё отдавал 404); я добавил retry ровно
+// туда и оставил проверку провенанса одноразовой — релиз 0.7.0 упал на ней. Оба раза артефакт был
+// исправен, оба раза падал наблюдатель.
 //
-// Отсутствие ответа при этом НЕ становится успехом: исчерпав попытки, шаг падает.
+// Локальная правка лечит случай, общий хелпер лечит КЛАСС: следующая проверка, читающая реестр,
+// получит выдержку по построению, а не по памяти автора. Именно поэтому лишний параметр здесь
+// дешевле третьего повторения.
+//
+// Отсутствие ответа успехом не становится ни в одной из проверок: исчерпав попытки, шаг падает.
 const RETRIES = 20;
 const WAIT_MS = 15_000;
-let seen = false;
-for (let attempt = 1; attempt <= RETRIES; attempt += 1) {
-  const viewVersion = run('npm', ['view', `${NAME}@${VERSION}`, 'version']);
-  if (viewVersion.status === 0 && viewVersion.stdout.trim() === VERSION) {
-    seen = true;
-    console.log(
-      `  ✓ версия ${VERSION} доступна в реестре` + (attempt > 1 ? ` (с попытки ${attempt})` : ''),
-    );
-    break;
+
+/**
+ * Повторять `attempt()` до успеха либо до исчерпания попыток.
+ * `attempt` возвращает `{ ok, detail }`; `detail` печатается при финальном отказе.
+ */
+function retryReadingRegistry(label, attempt) {
+  for (let n = 1; n <= RETRIES; n += 1) {
+    const out = attempt();
+    if (out.ok) {
+      console.log(`  ✓ ${label}` + (n > 1 ? ` (с попытки ${n})` : ''));
+      return true;
+    }
+    if (n === RETRIES) {
+      console.error(`verify-published: BLOCKED — ${label}: не подтверждено за ${RETRIES} попыток`);
+      if (out.detail) console.error(`  ${out.detail}`);
+      return false;
+    }
+    // Пауза отдельным процессом: скрипт синхронный, а тащить сюда async-обвязку ради sleep значило
+    // бы переписать всё остальное.
+    run('node', ['-e', `setTimeout(()=>{}, ${WAIT_MS})`]);
   }
-  if (attempt === RETRIES) {
-    console.error(`verify-published: BLOCKED — ${NAME}@${VERSION} не найден в реестре за ${RETRIES} попыток`);
-    console.error(`  ${(viewVersion.stderr || '').trim() || 'npm view вернул ' + viewVersion.stdout.trim()}`);
-    break;
-  }
-  run('node', ['-e', `setTimeout(()=>{}, ${WAIT_MS})`]);
+  return false;
 }
+
+// ── 1. Версия доступна в реестре ─────────────────────────────────────────────
+const seen = retryReadingRegistry(`версия ${VERSION} доступна в реестре`, () => {
+  const viewVersion = run('npm', ['view', `${NAME}@${VERSION}`, 'version']);
+  if (viewVersion.status === 0 && viewVersion.stdout.trim() === VERSION) return { ok: true };
+  return {
+    ok: false,
+    detail: (viewVersion.stderr || '').trim() || `npm view вернул ${viewVersion.stdout.trim()}`,
+  };
+});
 if (!seen) process.exit(1);
 
 // ── 2. Пин контракта — РОВНО заявленный ──────────────────────────────────────
@@ -245,11 +265,21 @@ try {
 }
 
 // ── 5. Провенанс приложен ────────────────────────────────────────────────────
-const att = run('curl', ['-sf', `https://registry.npmjs.org/-/npm/v1/attestations/${NAME}@${VERSION}`]);
-if (att.status !== 0 || !att.stdout.includes('slsa.dev/provenance')) {
+//
+// ЧЕРЕЗ ТОТ ЖЕ RETRY. Эндпоинт аттестаций — отдельный сервис от packument'а, и отстаёт он
+// независимо: релиз 0.7.0 упал ровно здесь, когда версия уже читалась, а аттестация ещё нет.
+// Провенанс при этом был приложен — соседний шаг workflow, у которого выдержка есть давно, это
+// подтвердил на том же прогоне.
+const attested = retryReadingRegistry('провенанс приложен', () => {
+  const att = run('curl', ['-sf', `https://registry.npmjs.org/-/npm/v1/attestations/${NAME}@${VERSION}`]);
+  if (att.status === 0 && att.stdout.includes('slsa.dev/provenance')) return { ok: true };
+  return {
+    ok: false,
+    detail: `эндпоинт аттестаций не подтвердил slsa.dev/provenance для ${NAME}@${VERSION}`,
+  };
+});
+if (!attested) {
   problems.push(`у ${NAME}@${VERSION} нет аттестации провенанса в реестре`);
-} else {
-  console.log('  ✓ провенанс приложен');
 }
 
 if (problems.length > 0) {
