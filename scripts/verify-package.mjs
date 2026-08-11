@@ -253,7 +253,44 @@ try {
       throw new Error('после броска чекпойнт не разрешён — гейт заперся навсегда');
     }
 
-    console.log('clean consumer: actor API (' + required.length + ' экспортов) + оркестратор frontier OK');
+    // ── АСИНХРОННАЯ ФОРМА ─────────────────────────────────────────────────────
+    //
+    // Проверяется отдельно, потому что именно её берёт настоящий хост: барный цикл потребителя
+    // асинхронен по существу (стратегия за границей песочницы). Гейты релиза при этом смотрели
+    // ТОЛЬКО на синхронную форму — то есть доказывали свойства пути, которым никто не пойдёт, и
+    // молчали про тот, которым пойдут все. Найдено ревью владельца.
+    if (await host.runFrontierAsync(1, async () => { await null; return host.phase; }) !== 'in-frontier') {
+      throw new Error('async: фаза не удержана ПОСЛЕ await — frontier закрылся, пока работа в полёте');
+    }
+    if (host.phase !== 'boundary') throw new Error('async: frontier не закрыт после успешного тела');
+
+    let asyncRefused = false;
+    try { await host.runFrontierAsync(1, async () => { await null; return host.takeCheckpoint(cp); }); }
+    catch (e) { asyncRefused = e instanceof engine.CheckpointBoundaryViolation; }
+    if (!asyncRefused) throw new Error('async: чекпойнт ПРОШЁЛ после await внутри frontier');
+
+    // Вложенный вызов обязан бросить СИНХРОННО, на месте вызова: у полностью async-функции он
+    // приезжал бы отказом промиса, и вызывающий, забывший await, получил бы unhandled rejection
+    // вместо немедленной ошибки — тише всего ровно там, где проверка нужна.
+    const inFlight = host.runFrontierAsync(1, async () => { await null; return 1; });
+    let nestedThrewSync = false;
+    try { host.runFrontierAsync(1, async () => 2); } catch (e) {
+      nestedThrewSync = e instanceof engine.CheckpointBoundaryViolation;
+    }
+    await inFlight;
+    if (!nestedThrewSync) throw new Error('async: вложенный frontier не бросил СИНХРОННО');
+
+    const asyncBoom = new Error('async boom');
+    let asyncOriginal;
+    try { await host.runFrontierAsync(1, async () => { await null; throw asyncBoom; }); }
+    catch (e) { asyncOriginal = e; }
+    if (asyncOriginal !== asyncBoom) throw new Error('async: исходный отказ тела подменён');
+    if (host.phase !== 'boundary') throw new Error('async: после rejection фаза осталась in-frontier');
+    if (typeof host.takeCheckpoint(cp) !== 'string') {
+      throw new Error('async: после rejection чекпойнт не разрешён');
+    }
+
+    console.log('clean consumer: actor API (' + required.length + ' экспортов) + оркестратор frontier (sync и async) OK');
   `;
   writeFileSync(join(project, 'smoke.mjs'), smoke);
   process.stdout.write(run('node', ['smoke.mjs'], project));
