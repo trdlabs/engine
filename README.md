@@ -5,15 +5,21 @@ trace — shared by `trdlabs/backtester` and `trdlabs/platform`, so that a bundl
 profile + reality model) behaves identically in backtest, replay, paper and live, modulo *declared*
 reality models.
 
-**Status: Ф2 bootstrap.** The package is `private` and unpublished. Going public on npm and
-reconsidering repository visibility are owner decisions; `pnpm release:preflight` fails closed until
-they are made.
+**Status: 083 S2 merged (2026-08-11).** The repository is public and the package is published —
+`@trdlabs/engine` on npm with provenance, `0.3.0` at the time of writing. The Ф2 bootstrap line that
+stood here ("private and unpublished") was true until 2026-07-26 and stale afterwards.
+
+What exists now, on top of the Ф2/Ф3 execution core: the **actor core** of contract 083 S2 —
+a total frontier order with a continuous actor-local `seq`, batch semantics §3.8.3–3.8.4, the order
+FSM, the execution ledger, advance-time timers, the sim-exchange, a checkpointable RNG and the §3.6
+checkpoint format with engine-level recovery-equivalence.
 
 ## Where the rules live
 
 | Concern | Owner |
 | --- | --- |
 | Semantics (what a fill *means*) | control-center `docs/architecture/bundle-execution-semantics.md` — 11 owner decisions |
+| Actor contract (frontier, batch, timers, checkpoint) | control-center `docs/superpowers/specs/2026-08-04-event-driven-actor-contract-design.md` (083) |
 | Run identity (what a trace's version fields mean) | [`docs/run-identity.md`](docs/run-identity.md) — owner decision (A), 2026-07-25 |
 | Contract vocabulary (`RealityModel` and friends) | `@trdlabs/sdk` |
 | Execution (this repo) | implements exactly what the SSOT says |
@@ -39,10 +45,38 @@ pnpm typecheck            # tsc, strict
 pnpm test                 # full suite
 node scripts/determinism-gate.mjs   # static: no wall clock / randomness / host entropy / unsorted iteration in src/
 pnpm gate:tapes           # tape provenance + content-ref drift
+pnpm verify:package       # clean consumer: the tarball installs and the actor API works through it
 ```
 
 The determinism guarantee has two halves and needs both: the static gate catches a `Date.now()` on
 a branch no fixture reaches; the golden-tape test catches an ordering bug no regex can see.
+
+`verify:package` is the third half, and it exists because a green suite proves nothing about the
+**shipped surface**: the S2 modules lived in `src/actor/`, the tests imported them directly, every
+gate was green — and the built package exported none of them. It now also checks the checkpoint
+boundary below *by behaviour*, and checks that the free encoder has **not** come back.
+
+## Checkpointing: only on a completed frontier boundary
+
+Owner decision `S2-D1` (2026-08-11): in v1 a checkpoint is legal **only on a completed frontier
+boundary**, and this is enforced structurally rather than by convention. There is no free
+`encodeCheckpoint` on the package surface — encoding lives behind `createCheckpointGate()`, which
+asks the phase and throws `CheckpointBoundaryViolation` inside an open frontier.
+
+```ts
+const gate = createCheckpointGate();
+gate.takeCheckpoint(cp);      // OK — on a boundary
+gate.openFrontier(tsUs);
+gate.takeCheckpoint(cp);      // throws CheckpointBoundaryViolation
+gate.closeFrontier();
+```
+
+The reason it is a gate and not a validation: a checkpoint taken mid-frontier is correct **in form**
+and wrong **in moment**. The §3.6 tree has no slot for the frozen eligible timer set of an open
+frontier, so such a checkpoint passes every `restore()` check, returns `ok`, and only the resumed
+run diverges — no inspection of the *contents* can tell it from a legal one. `restore()` is
+deliberately free of the gate: there is no illegal moment for **reading**. An `inFlightFrontier`
+slot is deferred to the stage that allows live auto-resume.
 
 ## Golden tapes
 
@@ -51,7 +85,23 @@ a branch no fixture reaches; the golden-tape test catches an ordering bug no reg
 `wfo/2026-06-09-to-2026-07-20-vps-wfo42d`). Each tape carries its provenance and its content ref;
 `scripts/build-tapes.ts` is the reproducible derivation.
 
-They are **`FROZEN`** since 2026-07-25, and `test/golden/expected-traces.json` is **binding**. The
+They are **`FROZEN`** since 2026-07-25, and `test/golden/expected-traces.json` is **binding**.
+
+**The anchor was re-frozen once, on 2026-08-11**, and that is the only time any frozen value has
+moved. Owner decision `S2-D1`: `simulate()` now emits trace timestamps in **contract-native
+microseconds**, so `traceFormatVersion` went `1 → 2` and every `traceRef` changed. Behaviour did
+not: the named step proved, before writing anything, that the reverse projection of each fresh
+µs-trace back to milliseconds and format `1` reproduces the frozen ref **exactly**, 9 of 9. The
+previous refs are kept in `refrozen.priorRefs` — otherwise the new numbers would, in time, read as
+"they were always this". `ENGINE_VERSION` deliberately did not move: the trace *format* changed, not
+the *semantics generation*, and the two are separate knobs with a gate pinning their independence.
+
+`scripts/refreeze-tapes-us.mts` is that named step, and it will not run for anyone without a
+**structured** `--decision-ref` (repo / PR / document / section / date) plus a `--reason`: a
+signature under an irreversible action has to be someone else's, and a free-form string leads
+nowhere.
+
+The
 freeze was gated on one question — *does run identity need its own format version?* — which the
 owner resolved with option (A): identity carries its own trace-format version, and the research
 `CONTRACT_VERSION` is a plain hashed field on the host's envelope rather than part of this trace.
