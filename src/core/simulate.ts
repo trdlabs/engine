@@ -28,7 +28,9 @@ import type {
   StrategyDecision,
   StrategyModule,
   Tape,
+  TimestampUs,
 } from '../contract/index.js';
+import { MICROS_PER_MILLI, timestampUs } from '../contract/index.js';
 import { canonicalJson } from '../determinism/canonical-json.js';
 import { contentRef } from '../determinism/hash.js';
 import { createSeededRng } from '../determinism/rng.js';
@@ -68,7 +70,15 @@ import { parseTimeframeMs } from './timeframe.js';
  * inside it — that is what keeps a golden tape stable across contract bumps. Materializing the host
  * half lands with Ф3.
  */
-export const TRACE_FORMAT_VERSION = '1';
+/**
+ * 083 S2: `'1'` → `'2'` — метки времени в trace переехали в МИКРОСЕКУНДЫ.
+ *
+ * Бамп обязателен и не косметический: `1 700 000 000 000` это и правдоподобные миллисекунды, и
+ * правдоподобные микросекунды, поэтому по ЗНАЧЕНИЮ форматы неразличимы. Без версии читатель,
+ * получивший старый и новый trace, не смог бы сказать, в каких единицах перед ним время, — а
+ * ошибка на три порядка в метке времени не выглядит как ошибка, она выглядит как другая дата.
+ */
+export const TRACE_FORMAT_VERSION = '2';
 
 /**
  * The execution-SEMANTICS generation stamped into every trace: which core behaviour executed the
@@ -133,14 +143,23 @@ function orderId(symbol: string, barIndex: number, intent: string): string {
   return `ord-${symbol}-${barIndex}-${intent}`;
 }
 
-/** Data clock (SSOT decision 8): tape time, advanced by the loop, never read from the host. */
+/**
+ * Data clock (SSOT decision 8): tape time, advanced by the loop, never read from the host.
+ *
+ * С 083 S2 хранит МИКРОСЕКУНДЫ: лента нормализуется на ingest, и всё ниже уже микросекундное.
+ * `nowMs()` остаётся санкционированной границей наружу для v1-стратегий и делит в момент вызова —
+ * внутри ядра он не используется нигде.
+ */
 class TapeClock implements Clock {
-  private ts = 0;
-  advanceTo(ts: number): void {
-    this.ts = ts;
+  private tsUs = 0;
+  advanceTo(tsUs: number): void {
+    this.tsUs = tsUs;
+  }
+  nowUs(): TimestampUs {
+    return timestampUs(this.tsUs);
   }
   nowMs(): number {
-    return this.ts;
+    return this.tsUs / MICROS_PER_MILLI;
   }
 }
 
@@ -265,7 +284,21 @@ function runProtectionCheck(
  */
 export function simulate(request: RunRequest): CanonicalTrace {
   const { tape, strategy, riskProfile, realityModel, initialEquity } = request;
-  const bars = tape.bars;
+  // ЕДИНСТВЕННЫЙ нормализатор времени на ingest (§3.2, 083 S2). Ниже по всему ядру `bar.ts` уже
+  // микросекундный, и отдельного умножения нет ни в одном месте — именно это отличает «одну
+  // единицу внутри» от «двух под похожими именами».
+  //
+  // `tapeRef` считается по ИСХОДНОЙ ленте (см. ниже), поэтому идентичность ленты нормализацией не
+  // сдвигается: иначе мы запустили бы вторую миграцию поверх первой, не назвав её.
+  const bars = tape.bars.map((b) => {
+    const tsUs = b.ts * MICROS_PER_MILLI;
+    // «Не выйдет за safe-диапазон» — утверждение о ДАННЫХ, а данные приходят снаружи. Молчаливая
+    // потеря точности здесь сделала бы две соседние минуты одной и тем же сломала бы порядок.
+    if (!Number.isSafeInteger(tsUs)) {
+      throw new Error(`simulate: метка бара ${b.ts} мс не переводится в µs без потери точности`);
+    }
+    return { ...b, ts: tsUs };
+  });
   const symbol = tape.symbol;
 
   if (parseTimeframeMs(tape.timeframe) === null) {

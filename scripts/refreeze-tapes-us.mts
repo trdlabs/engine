@@ -33,8 +33,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { ENGINE_VERSION, STANDARD_NO_FUNDING_1, simulate, traceRef, type RunRequest } from '../src/index.js';
-import { traceToMicroseconds, traceToMillisProjection, TRACE_FORMAT_US } from '../src/trace/to-microseconds.js';
-import { canonicalJson } from '../src/determinism/canonical-json.js';
+import { traceToMillisProjection, TRACE_FORMAT_US } from '../src/trace/to-microseconds.js';
 import {
   ALWAYS_FLAT,
   FIXED_USD_RISK,
@@ -106,7 +105,6 @@ interface Proof {
   readonly priorRef: string;
   readonly roundTripRef: string;
   readonly newRef: string;
-  readonly byteIdentical: boolean;
   readonly entry: ExpectationEntry;
 }
 
@@ -124,8 +122,13 @@ for (const tape of tapes) {
       realityModel: STANDARD_NO_FUNDING_1,
       initialEquity: INITIAL_EQUITY,
     };
-    const trace = simulate(request);
-    const us = traceToMicroseconds(trace);
+    // `simulate()` с 083 S2 отдаёт МИКРОСЕКУНДЫ нативно: лента нормализуется на ingest. Поэтому
+    // прямого перевода здесь НЕТ — второй `traceToMicroseconds` умножил бы уже переведённое ещё
+    // раз, и «доказательство» сошлось бы на выдуманной величине.
+    //
+    // Доказательство миграции — ровно обратная проекция: свежий µs-trace, спроецированный обратно
+    // в миллисекунды и версию формата '1', обязан дать РОВНО замороженный `traceRef`.
+    const us = simulate(request);
     const back = traceToMillisProjection(us);
 
     const prior = frozen.entries.find((e) => e.tape === tape.id && e.bundle === bundle.name);
@@ -140,9 +143,9 @@ for (const tape of tapes) {
       priorRef: prior.traceRef,
       roundTripRef: traceRef(back),
       newRef: traceRef(us),
-      // Побайтовое равенство ПРОЕКЦИИ исходнику — сильнее, чем совпадение хешей: хеши могли бы
-      // сойтись при разошедшемся payload'е только чудом, но diff показывает это прямо.
-      byteIdentical: canonicalJson(back) === canonicalJson(trace),
+      // Отдельного флага «побайтово» здесь НЕТ и быть не должно: `traceRef` и есть контент-хеш
+      // канонического payload'а, поэтому его совпадение с замороженным ref'ом — это и есть
+      // побайтовое равенство. Второй флаг лишь дублировал бы то же утверждение под другим именем.
       entry: {
         tape: tape.id,
         bundle: bundle.name,
@@ -157,14 +160,14 @@ for (const tape of tapes) {
 
 console.log(`refreeze-tapes-us: ${proofs.length} expectation(s), decisionRef=${decisionRef}`);
 for (const p of proofs) {
-  const ok = p.byteIdentical && p.roundTripRef === p.priorRef;
+  const ok = p.roundTripRef === p.priorRef;
   console.log(`  ${p.tape} × ${p.bundle}`);
   console.log(`    prior      : ${p.priorRef}`);
   console.log(`    round-trip : ${p.roundTripRef} ${ok ? '✓' : '✗ РАЗОШЛОСЬ'}`);
   console.log(`    new (µs)   : ${p.newRef}`);
 }
 
-const broken = proofs.filter((p) => !p.byteIdentical || p.roundTripRef !== p.priorRef);
+const broken = proofs.filter((p) => p.roundTripRef !== p.priorRef);
 if (broken.length > 0) {
   console.error(`\n${broken.length} expectation(s) не прошли доказательство — НИЧЕГО не записано.`);
   console.error('  Обратная проекция обязана воспроизводить замороженный traceRef побайтово.');
