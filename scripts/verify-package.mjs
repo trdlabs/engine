@@ -192,15 +192,20 @@ try {
       'matchBar', 'isEligibleForBar',
       'createCheckpointableRng', 'rngStateFromSeed', 'isRngState',
       'restore', 'replaceAuthorState', 'validateAuthorState',
-      'createCheckpointGate', 'CheckpointBoundaryViolation',
+      'createActorHost', 'CheckpointBoundaryViolation',
       'traceToMicroseconds', 'traceToMillisProjection',
     ];
-    // Свободного кодировщика в поверхности пакета быть НЕ должно: он делал запись чекпойнта
-    // возможной в любой момент, в том числе внутри открытого frontier (решение S2-D1, п. 2).
-    // Проверка именно на ОТСУТСТВИЕ — вернуть экспорт обратно случайной правкой легче, чем
-    // заметить это на ревью.
+    // ДВА ОТСУТСТВИЯ, и оба важнее любого присутствия — вернуть экспорт обратно случайной правкой
+    // легче, чем заметить это на ревью.
+    //
+    //   • свободный кодировщик делал запись чекпойнта возможной в любой момент (S2-D1, п. 2);
+    //   • свободная пара открыть/закрыть делает возможным УМОЛЧАНИЕ: хост, забывший уведомить
+    //     гейт, видит фазу boundary весь прогон и обходит политику формально (требование к S3).
     if (engine.encodeCheckpoint !== undefined) {
       throw new Error('encodeCheckpoint снова в поверхности пакета — граница чекпойнта обходима');
+    }
+    if (engine.createCheckpointGate !== undefined) {
+      throw new Error('createCheckpointGate снова в поверхности — frontier можно исполнить мимо гейта');
     }
     const missing = required.filter((n) => typeof engine[n] !== 'function' && engine[n] === undefined);
     if (missing.length > 0) {
@@ -214,25 +219,41 @@ try {
     );
     if (ordered[0].seq !== 7) throw new Error('orderFrontier не принял startSeq через публичный путь');
 
-    // Гейт границы проверяется ПОВЕДЕНИЕМ, а не наличием имени: экспортированная фабрика, которая
+    // Оркестратор проверяется ПОВЕДЕНИЕМ, а не наличием имени: экспортированная фабрика, которая
     // пропускает чекпойнт внутри frontier, — это отсутствующий гейт под правильной вывеской.
-    const gate = engine.createCheckpointGate();
+    const host = engine.createActorHost();
     const cp = {
       identity: { bundleDigest: 'd', contractVersion: 'c', engineVersion: 'e', projectionVersion: 'p' },
       authorState: {},
       engineState: { rng: engine.rngStateFromSeed(1), timers: [], orders: [], ledger: engine.EMPTY_LEDGER, lastCommittedSeq: -1 },
       projectionRecoveryState: { boundedHistory: [], indicatorAccumulators: {} },
     };
-    if (typeof gate.takeCheckpoint(cp) !== 'string') {
-      throw new Error('гейт не отдал чекпойнт на границе');
+    if (typeof host.takeCheckpoint(cp) !== 'string') {
+      throw new Error('хост не отдал чекпойнт на границе');
     }
-    gate.openFrontier(1);
-    let refused = false;
-    try { gate.takeCheckpoint(cp); } catch (e) { refused = e instanceof engine.CheckpointBoundaryViolation; }
-    if (!refused) throw new Error('гейт ПРОПУСТИЛ чекпойнт внутри открытого frontier');
-    gate.closeFrontier();
+    if (host.openFrontier !== undefined || host.closeFrontier !== undefined) {
+      throw new Error('у хоста есть свободная пара открыть/закрыть — «забыл уведомить» снова выразимо');
+    }
 
-    console.log('clean consumer: actor API (' + required.length + ' экспортов) + граница чекпойнта OK');
+    let refused = false;
+    try {
+      host.runFrontier(1, () => host.takeCheckpoint(cp));
+    } catch (e) {
+      refused = e instanceof engine.CheckpointBoundaryViolation;
+    }
+    if (!refused) throw new Error('хост ПРОПУСТИЛ чекпойнт внутри открытого frontier');
+
+    // finally: бросок из тела обязан вернуть фазу на границу, иначе один throw запирает чекпойнт
+    // до конца процесса.
+    try { host.runFrontier(1, () => { throw new Error('boom'); }); } catch (e) {
+      if (e.message !== 'boom') throw new Error('исходный отказ тела подменён: ' + e.message);
+    }
+    if (host.phase !== 'boundary') throw new Error('после броска фаза осталась in-frontier');
+    if (typeof host.takeCheckpoint(cp) !== 'string') {
+      throw new Error('после броска чекпойнт не разрешён — гейт заперся навсегда');
+    }
+
+    console.log('clean consumer: actor API (' + required.length + ' экспортов) + оркестратор frontier OK');
   `;
   writeFileSync(join(project, 'smoke.mjs'), smoke);
   process.stdout.write(run('node', ['smoke.mjs'], project));

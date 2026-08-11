@@ -77,16 +77,33 @@ which teaches everyone to ignore it.
 
 Owner decision `S2-D1` (2026-08-11): in v1 a checkpoint is legal **only on a completed frontier
 boundary**, and this is enforced structurally rather than by convention. There is no free
-`encodeCheckpoint` on the package surface — encoding lives behind `createCheckpointGate()`, which
-asks the phase and throws `CheckpointBoundaryViolation` inside an open frontier.
+`encodeCheckpoint` on the package surface, and — since S3 — no free open/close pair either. A
+frontier is run through the host, which owns the gate:
 
 ```ts
-const gate = createCheckpointGate();
-gate.takeCheckpoint(cp);      // OK — on a boundary
-gate.openFrontier(tsUs);
-gate.takeCheckpoint(cp);      // throws CheckpointBoundaryViolation
-gate.closeFrontier();
+const host = createActorHost();
+
+host.takeCheckpoint(cp);                    // OK — on a boundary
+host.runFrontier(tsUs, () => {
+  host.takeCheckpoint(cp);                  // throws CheckpointBoundaryViolation
+});
 ```
+
+**Why the host and not a gate you notify.** A gate that is *told* the phase binds only whoever tells
+it: a host that opens and closes frontiers itself and forgets to notify sees `boundary` for the whole
+run, and the boundary policy is formally satisfied while being entirely bypassed. As long as
+notification is a separate call, it is optional by construction — no amount of strictness inside the
+gate compensates. So the only entry point takes the frontier **body** and owns the pair itself;
+"forgot to notify" stops being expressible rather than becoming unlikely.
+
+`runFrontier` closes in `finally`, so a throw from the body returns the phase to the boundary — the
+original error propagates untouched, and the next checkpoint is allowed. Without that, one throw
+would leave the gate open and lock checkpointing for the rest of the process: a failure in the other
+direction, and just as silent as the one the gate exists to prevent.
+
+The body must be **synchronous**. A thenable is rejected loudly rather than awaited: an async body
+would "complete" the frontier with work still in flight — the gate returns to the boundary while
+engine state keeps changing, and determinism is lost quietly.
 
 The reason it is a gate and not a validation: a checkpoint taken mid-frontier is correct **in form**
 and wrong **in moment**. The §3.6 tree has no slot for the frozen eligible timer set of an open
