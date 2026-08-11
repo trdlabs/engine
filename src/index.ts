@@ -133,7 +133,6 @@ export {
   AUTHOR_STATE_MAX_BYTES,
   AUTHOR_STATE_MAX_DEPTH,
   AUTHOR_STATE_UPDATE_RULE,
-  encodeCheckpoint,
   replaceAuthorState,
   restore,
   validateAuthorState,
@@ -144,6 +143,15 @@ export {
   type RestoreOutcome,
   type SlotViolation,
 } from './actor/checkpoint.js';
+
+// Гейт границы frontier. Единственная дверь к записи чекпойнта — свободного кодировщика в
+// поверхности пакета НЕТ намеренно (решение владельца S2-D1, п. 2).
+export {
+  CheckpointBoundaryViolation,
+  createCheckpointGate,
+  type CheckpointGate,
+  type FrontierPhase,
+} from './actor/checkpoint-gate.js';
 
 export {
   TRACE_FORMAT_MS,

@@ -19,11 +19,11 @@ import {
   type OutboxEvent,
 } from '../../src/actor/batch.js';
 import {
-  encodeCheckpoint,
   restore,
   type Checkpoint,
   type CheckpointIdentity,
 } from '../../src/actor/checkpoint.js';
+import { createCheckpointGate, type CheckpointGate } from '../../src/actor/checkpoint-gate.js';
 import { applyFill, EMPTY_LEDGER, type Fill } from '../../src/actor/ledger.js';
 import { transition, type OrderState } from '../../src/actor/order-fsm.js';
 import { createCheckpointableRng, rngStateFromSeed } from '../../src/actor/rng.js';
@@ -46,15 +46,23 @@ export type Command =
   | { readonly kind: 'cancel'; readonly orderId: string }
   | { readonly kind: 'roll_rng' };
 
-/** Полное состояние прогона: чекпойнт + непрерывный seq + журнал наблюдаемого. */
+/**
+ * Полное состояние прогона: чекпойнт + непрерывный seq + журнал наблюдаемого.
+ *
+ * `gate` — рантайм-состояние границы frontier, а не данные: в отпечаток оно не входит и на
+ * эквивалентность не влияет. Оно здесь потому, что «чекпойнт законен только на завершённой
+ * границе» держится не значением, а фазой (решение владельца S2-D1, п. 2).
+ */
 export interface RunState {
   readonly checkpoint: Checkpoint;
   readonly seq: number;
   readonly log: readonly string[];
+  readonly gate: CheckpointGate;
 }
 
 export function initialRun(): RunState {
   return {
+    gate: createCheckpointGate(),
     checkpoint: {
       identity: IDENTITY,
       authorState: { armed: false, rolls: [] },
@@ -219,6 +227,7 @@ export function runFrontiers(
   let cp = start.checkpoint;
   let seq = start.seq;
   const log = [...start.log];
+  const gate = start.gate;
 
   for (let f = from; f < to; f += 1) {
     const b = bar(f);
@@ -226,6 +235,10 @@ export function runFrontiers(
     // На frontier возобновления события до точки разреза уже отработали, и переигрывать их нельзя:
     // префикс закоммичен и не откатывается (§3.8.4).
     const resumingHere = resume !== undefined && resume.frontier === f;
+
+    // 0. Открытие frontier — с этого момента чекпойнт невозможен. На frontier возобновления гейт
+    //    уже открыт разрезом, повторное открытие было бы «вложенным frontier» и броском.
+    if (!resumingHere) gate.openFrontier(b.tsUs);
 
     // 1. Таймеры: набор замораживается при ОТКРЫТИИ frontier.
     const fired = openFrontierTimers(cp.engineState.timers, b.tsUs);
@@ -312,13 +325,17 @@ export function runFrontiers(
 
       cp = { ...cp, engineState: { ...cp.engineState, lastCommittedSeq: e.seq } };
 
-      if (isCutHere) return { checkpoint: cp, seq, log };
+      // Разрез ВНУТРИ батча: frontier НЕ закрывается. Гейт остаётся в фазе `in-frontier`, и
+      // попытка снять чекпойнт из этой точки будет отвергнута — ровно то структурное поведение,
+      // ради которого гейт заведён.
+      if (isCutHere) return { checkpoint: cp, seq, log, gate };
     }
 
     seq = nextSeq(seq, ordered);
+    gate.closeFrontier();
   }
 
-  return { checkpoint: cp, seq, log };
+  return { checkpoint: cp, seq, log, gate };
 }
 
 /**
@@ -334,16 +351,20 @@ export function resumeFrom(state: RunState, cut: CutPoint, to: number): RunState
 }
 
 /**
- * Чекпойнт через НАСТОЯЩУЮ дверь: каноническое кодирование → `restore()` со всей валидацией.
+ * Чекпойнт через НАСТОЯЩУЮ дверь: гейт границы → каноническое кодирование → `restore()` со всей
+ * валидацией.
  *
  * Передача объекта по ссылке или голый JSON round-trip доказывали бы, что состояние равно самому
- * себе. Здесь проходит ровно тот путь, которым пользуется рантайм, включая проверку идентичности и
- * полной формы.
+ * себе. Здесь проходит ровно тот путь, которым пользуется рантайм, включая проверку фазы, проверку
+ * идентичности и полной формы.
+ *
+ * Из середины frontier эта функция не возвращается вовсе: `takeCheckpoint` бросает. Это не обход
+ * ограничения, а его исполнение.
  */
 export function checkpointRoundTrip(state: RunState): RunState {
-  const encoded = encodeCheckpoint(state.checkpoint);
+  const encoded = state.gate.takeCheckpoint(state.checkpoint);
   const parsed: unknown = JSON.parse(encoded);
   const outcome = restore(parsed, IDENTITY);
   if (!outcome.ok) throw new Error(`checkpoint не восстановился: ${outcome.reason}`);
-  return { checkpoint: outcome.checkpoint, seq: state.seq, log: state.log };
+  return { checkpoint: outcome.checkpoint, seq: state.seq, log: state.log, gate: state.gate };
 }

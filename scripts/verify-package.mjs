@@ -191,9 +191,17 @@ try {
       'transition', 'cancelRejected', 'isTerminal', 'checkCommandCount', 'checkDispatchDuration',
       'matchBar', 'isEligibleForBar',
       'createCheckpointableRng', 'rngStateFromSeed', 'isRngState',
-      'restore', 'replaceAuthorState', 'validateAuthorState', 'encodeCheckpoint',
+      'restore', 'replaceAuthorState', 'validateAuthorState',
+      'createCheckpointGate', 'CheckpointBoundaryViolation',
       'traceToMicroseconds', 'traceToMillisProjection',
     ];
+    // Свободного кодировщика в поверхности пакета быть НЕ должно: он делал запись чекпойнта
+    // возможной в любой момент, в том числе внутри открытого frontier (решение S2-D1, п. 2).
+    // Проверка именно на ОТСУТСТВИЕ — вернуть экспорт обратно случайной правкой легче, чем
+    // заметить это на ревью.
+    if (engine.encodeCheckpoint !== undefined) {
+      throw new Error('encodeCheckpoint снова в поверхности пакета — граница чекпойнта обходима');
+    }
     const missing = required.filter((n) => typeof engine[n] !== 'function' && engine[n] === undefined);
     if (missing.length > 0) {
       throw new Error('actor API не экспортирован потребителю: ' + missing.join(', '));
@@ -205,7 +213,26 @@ try {
       7,
     );
     if (ordered[0].seq !== 7) throw new Error('orderFrontier не принял startSeq через публичный путь');
-    console.log('clean consumer: actor API (' + required.length + ' экспортов) OK');
+
+    // Гейт границы проверяется ПОВЕДЕНИЕМ, а не наличием имени: экспортированная фабрика, которая
+    // пропускает чекпойнт внутри frontier, — это отсутствующий гейт под правильной вывеской.
+    const gate = engine.createCheckpointGate();
+    const cp = {
+      identity: { bundleDigest: 'd', contractVersion: 'c', engineVersion: 'e', projectionVersion: 'p' },
+      authorState: {},
+      engineState: { rng: engine.rngStateFromSeed(1), timers: [], orders: [], ledger: engine.EMPTY_LEDGER, lastCommittedSeq: -1 },
+      projectionRecoveryState: { boundedHistory: [], indicatorAccumulators: {} },
+    };
+    if (typeof gate.takeCheckpoint(cp) !== 'string') {
+      throw new Error('гейт не отдал чекпойнт на границе');
+    }
+    gate.openFrontier(1);
+    let refused = false;
+    try { gate.takeCheckpoint(cp); } catch (e) { refused = e instanceof engine.CheckpointBoundaryViolation; }
+    if (!refused) throw new Error('гейт ПРОПУСТИЛ чекпойнт внутри открытого frontier');
+    gate.closeFrontier();
+
+    console.log('clean consumer: actor API (' + required.length + ' экспортов) + граница чекпойнта OK');
   `;
   writeFileSync(join(project, 'smoke.mjs'), smoke);
   process.stdout.write(run('node', ['smoke.mjs'], project));

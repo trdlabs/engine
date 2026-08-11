@@ -12,10 +12,12 @@
 //
 // Три требования, и ни одно не формальность:
 //
-//   1. `--decision-ref` — идентификатор решения ВЛАДЕЛЬЦА. Скрипт не выдумывает его и не
-//      подставляет дефолт: подпись под необратимым действием обязана быть чужой. Штатный
-//      `refresh-expectations` требует лишь `--force`, и этого мало: `--force` говорит «я уверен»,
-//      а `decisionRef` — «вот запись, по которой это можно проверить».
+//   1. `--decision-ref` — СТРУКТУРИРОВАННАЯ ссылка на решение ВЛАДЕЛЬЦА: репозиторий, PR,
+//      документ, раздел, дата. Скрипт не выдумывает её и дефолта не имеет: подпись под необратимым
+//      действием обязана быть чужой. Штатный `refresh-expectations` требует лишь `--force`, и
+//      этого мало: `--force` говорит «я уверен», а `decisionRef` — «вот запись, по которой это
+//      можно проверить». Свободная строка не годится ровно поэтому: `--decision-ref ok`
+//      удовлетворял бы проверке и не вёл бы никуда.
 //
 //   2. `--reason` — почему якорь двигается. Якорь без причины это стёртая история.
 //
@@ -27,7 +29,12 @@
 // полями. Добавляется только блок `refrozen` с прежними refs — иначе новое число со временем
 // прочтётся как «всегда таким было».
 //
-// Запуск: pnpm exec tsx scripts/refreeze-tapes-us.mts --decision-ref <ref> --reason "<почему>" [--write]
+// Запуск:
+//   pnpm exec tsx scripts/refreeze-tapes-us.mts \
+//     --decision-ref '{"decision":"S2-D1","decidedOn":"2026-08-11","repo":"trdlabs/control-center",
+//                      "pr":337,"document":"docs/delivery/initiatives/shared-execution-engine.md",
+//                      "section":"S2 owner decisions — trace units, checkpoint boundary and atomicity"}' \
+//     --reason "<почему>" [--write]
 
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -50,18 +57,92 @@ const flag = (name: string): string | undefined => {
   return i === -1 ? undefined : argv[i + 1];
 };
 
-const decisionRef = flag('decision-ref');
+const decisionRefRaw = flag('decision-ref');
 const reason = flag('reason');
 const write = argv.includes('--write');
 
-if (decisionRef === undefined || decisionRef.trim() === '') {
-  console.error(
-    'refreeze-tapes-us: требуется --decision-ref.\n' +
-      '  Перезаморозка необратима: прежние refs останутся только в истории git.\n' +
-      '  Идентификатор решения выдаёт ВЛАДЕЛЕЦ — скрипт его не выдумывает и дефолта не имеет.',
-  );
-  process.exit(2);
+/**
+ * Структурированная ссылка на решение владельца.
+ *
+ * ПОЧЕМУ НЕ СТРОКА. Первая редакция принимала любую непустую строку — то есть `--decision-ref ok`
+ * проходил ровно так же, как настоящая ссылка. Такой «идентификатор» не отличим от отписки и
+ * ничего не даёт тому, кто через полгода спросит, на каком основании двинулся якорь. Ссылка обязана
+ * вести к ЗАПИСИ: репозиторий, PR, документ, раздел. Тогда её можно открыть и прочитать, а не
+ * поверить в неё.
+ */
+interface DecisionRef {
+  readonly decision: string;
+  readonly decidedOn: string;
+  readonly repo: string;
+  readonly pr: number;
+  readonly document: string;
+  readonly section: string;
 }
+
+function parseDecisionRef(raw: string | undefined): DecisionRef {
+  if (raw === undefined || raw.trim() === '') {
+    console.error(
+      'refreeze-tapes-us: требуется --decision-ref.\n' +
+        '  Перезаморозка необратима: прежние refs останутся только в истории git.\n' +
+        '  Идентификатор решения выдаёт ВЛАДЕЛЕЦ — скрипт его не выдумывает и дефолта не имеет.',
+    );
+    process.exit(2);
+  }
+
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    console.error(
+      `refreeze-tapes-us: --decision-ref должен быть JSON-объектом, а получена строка ${JSON.stringify(raw)}.\n` +
+        '  Свободная строка не ведёт никуда: её нельзя открыть и нельзя проверить.\n' +
+        '  Ожидается: {"decision","decidedOn","repo","pr","document","section"}',
+    );
+    process.exit(2);
+  }
+  if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) {
+    console.error('refreeze-tapes-us: --decision-ref не объект.');
+    process.exit(2);
+  }
+  const r = parsed as Record<string, unknown>;
+
+  const problems: string[] = [];
+  for (const field of ['decision', 'repo', 'document', 'section'] as const) {
+    if (typeof r[field] !== 'string' || (r[field] as string).trim() === '') {
+      problems.push(`${field}: непустая строка`);
+    }
+  }
+  // Дата решения — та, что записана в документе, а не «сегодня». Скрипт её НЕ подставляет: подпись
+  // под необратимым действием обязана быть чужой целиком, включая момент.
+  if (typeof r.decidedOn !== 'string' || !/^\d{4}-\d{2}-\d{2}$/.test(r.decidedOn)) {
+    problems.push('decidedOn: дата в форме YYYY-MM-DD');
+  }
+  if (typeof r.repo === 'string' && !/^[\w.-]+\/[\w.-]+$/.test(r.repo)) {
+    problems.push('repo: форма owner/repo');
+  }
+  if (typeof r.pr !== 'number' || !Number.isInteger(r.pr) || r.pr <= 0) {
+    problems.push('pr: положительное целое');
+  }
+  // Раздел обязателен и обязан быть НАЗВАНИЕМ, а не номером: документ переверстают, номер уедет,
+  // а название останется искомым.
+  if (typeof r.section === 'string' && r.section.trim().length < 8) {
+    problems.push('section: название раздела, а не номер');
+  }
+
+  if (problems.length > 0) {
+    console.error(
+      'refreeze-tapes-us: --decision-ref невалиден:\n' +
+        problems.map((p) => `  - ${p}`).join('\n') +
+        '\n  Ссылка обязана вести к записи, которую можно открыть и прочитать.',
+    );
+    process.exit(2);
+  }
+
+  return r as unknown as DecisionRef;
+}
+
+const decisionRef = parseDecisionRef(decisionRefRaw);
+
 if (reason === undefined || reason.trim() === '') {
   console.error('refreeze-tapes-us: требуется --reason. Якорь без причины это стёртая история.');
   process.exit(2);
@@ -158,7 +239,10 @@ for (const tape of tapes) {
   }
 }
 
-console.log(`refreeze-tapes-us: ${proofs.length} expectation(s), decisionRef=${decisionRef}`);
+console.log(
+  `refreeze-tapes-us: ${proofs.length} expectation(s), решение ${decisionRef.decision} ` +
+    `(${decisionRef.repo}#${decisionRef.pr}, ${decisionRef.decidedOn})`,
+);
 for (const p of proofs) {
   const ok = p.roundTripRef === p.priorRef;
   console.log(`  ${p.tape} × ${p.bundle}`);

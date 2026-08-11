@@ -9,6 +9,7 @@ import { describe, expect, it } from 'vitest';
 import { timestampUs } from '../src/contract/index.js';
 import {
   applyBatch,
+  deepFreeze,
   type BatchCore,
   type CascadeBudget,
   type CascadeCounter,
@@ -216,5 +217,66 @@ describe('батч: атомарность держится ЗАМОРОЗКОЙ
     };
     applyBatch(['a', 'b'], { n: 0 }, spy, BUDGET, fresh(), rejection);
     expect(seen).toEqual([true, true]);
+  });
+});
+
+describe('батч: поверхностно замороженный родитель НЕ пропускает изменяемых детей', () => {
+  // Дыра, найденная ревью владельца в fast-path'е заморозки. Первая редакция спрашивала
+  // `Object.isFrozen(obj)` и на «да» возвращалась немедленно. Но `Object.isFrozen` истинен и для
+  // ПОВЕРХНОСТНО замороженного объекта — а такие в состоянии есть: любая замороженная константа
+  // чужого модуля, приехавшая в состояние по ссылке. Её изменяемые дети оставались изменяемыми, и
+  // гарантия «частичных эффектов нет» переставала быть структурной ровно там, где состояние
+  // частично заморожено снаружи.
+  //
+  // Оптимизация при этом НЕ откачена: fast-path остался, но спрашивает реестр «замораживал ли это
+  // ЭТОТ обход», а не «заморожено ли вообще».
+
+  /** Родитель заморожен снаружи ПОВЕРХНОСТНО, ребёнок под ним изменяем. */
+  const shallow = () => ({ cfg: Object.freeze({ limits: { max: 5 } }) });
+
+  it('deepFreeze спускается ПОД поверхностно замороженного родителя', () => {
+    const s = shallow();
+    expect(Object.isFrozen(s.cfg)).toBe(true); // родитель уже «заморожен»…
+    expect(Object.isFrozen(s.cfg.limits)).toBe(false); // …а ребёнок нет — это и есть дыра
+    deepFreeze(s);
+    expect(Object.isFrozen(s.cfg.limits)).toBe(true);
+  });
+
+  it('через applyBatch: мутация внука не проходит и состояние не портится', () => {
+    // Именно этот исход первая редакция допускала МОЛЧА: apply правит внука, затем бросает, батч
+    // отчитывается committed:0 — и состояние снаружи уже испорчено.
+    const initial = shallow();
+    const corrupting: BatchCore<string, typeof initial> = {
+      validate: () => ({ ok: true }),
+      apply: (_c, s) => {
+        (s.cfg.limits as { max: number }).max = 999;
+        throw new Error('boom');
+      },
+    };
+    const out = applyBatch(['x'], initial, corrupting, BUDGET, fresh(), rejection);
+    expect(out.halt).not.toBeNull();
+    expect(out.committed).toBe(0);
+    // ГЛАВНОЕ утверждение: внук не изменился. Под `Object.isFrozen` здесь было бы 999.
+    expect(initial.cfg.limits.max).toBe(5);
+  });
+
+  it('fast-path жив: повторный обход того же поддерева ничего не ломает', () => {
+    // Если бы починка свелась к «убрать fast-path», этот тест прошёл бы тоже — поэтому он
+    // проверяет не скорость (её проверяет стенд), а то, что повторный вызов идемпотентен и
+    // по-прежнему возвращает то же значение по ссылке.
+    const s = { a: { b: { c: 1 } } };
+    const once = deepFreeze(s);
+    const twice = deepFreeze(s);
+    expect(twice).toBe(once);
+    expect(Object.isFrozen(s.a.b)).toBe(true);
+  });
+
+  it('цикл не уводит обход в бесконечность', () => {
+    const a: Record<string, unknown> = { name: 'a' };
+    const b: Record<string, unknown> = { name: 'b', a };
+    a.b = b;
+    deepFreeze(a);
+    expect(Object.isFrozen(a)).toBe(true);
+    expect(Object.isFrozen(b)).toBe(true);
   });
 });

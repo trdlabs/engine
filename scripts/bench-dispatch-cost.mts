@@ -25,7 +25,16 @@
 import { hrtime } from 'node:process';
 import { cpus, hostname, totalmem } from 'node:os';
 import type { MarketDataKind } from '@trdlabs/sdk/research-contract';
-import { applyBatch, deepFreeze, type BatchCore, type CascadeBudget, type CascadeCounter, type OutboxEvent } from '../src/actor/batch.js';
+import {
+  applyBatch,
+  CascadeBudgetBreach,
+  type Applied,
+  type BatchCore,
+  type BatchOutcome,
+  type CascadeBudget,
+  type CascadeCounter,
+  type OutboxEvent,
+} from '../src/actor/batch.js';
 import { applyFill, EMPTY_LEDGER, type Fill, type Ledger } from '../src/actor/ledger.js';
 import { transition, type OrderState } from '../src/actor/order-fsm.js';
 import { createCheckpointableRng, rngStateFromSeed, type RngState } from '../src/actor/rng.js';
@@ -230,65 +239,211 @@ for (const { label } of KINDS) {
 // ── Атрибуция: сколько из этого стоит глубокая заморозка ──────────────────────
 //
 // Заморозка добавлена в S2 ради атомарности (отклонённая или упавшая команда не имеет частичных
-// эффектов ПО ПОСТРОЕНИЮ, а не по комментарию). Она обходит состояние на КАЖДУЮ команду, и это
-// прямо противоположно цели мидгейта — поэтому её вклад обязан быть назван числом, а не остаться
-// подозрением.
+// эффектов ПО ПОСТРОЕНИЮ, а не по комментарию). Её вклад обязан быть назван числом, а не остаться
+// подозрением — иначе решение «держать или искать другую форму» принимается вслепую.
 //
-// АБСОЛЮТНЫЕ числа тут по-прежнему несравнимы с базой S0 (машина не та), но ОТНОШЕНИЕ двух
-// вариантов на одной машине сравнимо с самим собой — и именно оно отвечает на вопрос «держать
-// заморозку или искать другую форму атомарности».
+// ЧТО БЫЛО НЕ ТАК У ПРЕЖНЕЙ АТРИБУЦИИ. Она мерила `deepFreeze` НАПРЯМУЮ на синтетическом
+// состоянии: клон на каждой итерации для «холодного» случая и один и тот же замороженный объект
+// для «тёплого», после чего складывала `cold + 4×warm` в оценку вклада. Три изъяна сразу:
+//   • состояние синтетическое — не те объекты и не те формы, что реально текут через батч;
+//   • «холодный» случай в реальном прогоне бывает ОДИН РАЗ на процесс, а не раз на батч, потому
+//     что реестр замороженного переживает вызовы; складывать его в цену КАЖДОГО диспатча значит
+//     завышать;
+//   • сама формула «1 холодный + 4 тёплых» — модель, а не замер.
+// Итог 8.37 мкс был поэтому оценкой, а не измерением, и владелец прямо запретил считать его
+// доказанным.
+//
+// ЧТО ЗДЕСЬ. A/B на РЕАЛЬНОМ пути: тот же `dispatchFrontier` с настоящим `applyBatch` против
+// точно того же цикла с `applyBatchNoFreeze` — копией алгоритма, отличающейся ровно двумя
+// снятыми вызовами заморозки. Разность p50 и есть вклад заморозки в один диспатч. Никакой
+// формулы: обе стороны реально исполняются.
+//
+// АБСОЛЮТНЫЕ числа по-прежнему несравнимы с базой S0 (машина не та), но разность двух арм на
+// одной машине сравнима сама с собой — и именно она отвечает на вопрос владельца.
+
+/**
+ * Копия `applyBatch` БЕЗ заморозки — база сравнения, а не вторая реализация.
+ *
+ * Копия опасна тем, что может разойтись с оригиналом и тогда замер сравнивает два разных
+ * алгоритма. Поэтому ниже стоит проверка эквивалентности исходов, и она — часть замера: при
+ * расхождении скрипт падает, а не печатает число.
+ *
+ * Единственный класс поведения, где расхождение ЗАКОННО и ожидаемо, — команда, мутирующая чужое
+ * состояние: у оригинала это бросок (в том и смысл заморозки), у копии — тихая порча. Ядро этого
+ * станка не мутирует ничего, и корпус проверки это удерживает.
+ */
+function applyBatchNoFreeze<C, S>(
+  commands: readonly C[],
+  initialState: S,
+  batchCore: BatchCore<C, S>,
+  budget: CascadeBudget,
+  counter: CascadeCounter,
+  rejectionEvent: (command: C, index: number, reason: string) => OutboxEvent,
+): BatchOutcome<S> {
+  const outbox: OutboxEvent[] = [];
+  let state = initialState;
+  let committed = 0;
+
+  counter.depth += 1;
+  if (counter.depth > budget.maxCascadeDepth) {
+    return {
+      state,
+      committed: 0,
+      rejectedIndex: null,
+      rejectedReason: null,
+      skipped: commands.length,
+      outbox,
+      halt: { reason: new CascadeBudgetBreach('maxCascadeDepth', budget.maxCascadeDepth).message },
+    };
+  }
+
+  for (let i = 0; i < commands.length; i += 1) {
+    const command = commands[i]!;
+    const verdict = batchCore.validate(command, state);
+    if (!verdict.ok) {
+      outbox.push(rejectionEvent(command, i, verdict.reason));
+      counter.events += 1;
+      return {
+        state,
+        committed,
+        rejectedIndex: i,
+        rejectedReason: verdict.reason,
+        skipped: commands.length - i - 1,
+        outbox,
+        halt: null,
+      };
+    }
+
+    let applied: Applied<S>;
+    try {
+      applied = batchCore.apply(command, state);
+    } catch (err) {
+      return {
+        state,
+        committed,
+        rejectedIndex: null,
+        rejectedReason: null,
+        skipped: commands.length - i,
+        outbox,
+        halt: { reason: err instanceof Error ? err.message : String(err) },
+      };
+    }
+
+    state = applied.state;
+    committed += 1;
+
+    for (const e of applied.events) {
+      counter.events += 1;
+      if (counter.events > budget.maxEventsPerFrontier) {
+        return {
+          state,
+          committed,
+          rejectedIndex: null,
+          rejectedReason: null,
+          skipped: commands.length - i - 1,
+          outbox,
+          halt: {
+            reason: new CascadeBudgetBreach('maxEventsPerFrontier', budget.maxEventsPerFrontier)
+              .message,
+          },
+        };
+      }
+      outbox.push(e);
+    }
+  }
+
+  return { state, committed, rejectedIndex: null, rejectedReason: null, skipped: 0, outbox, halt: null };
+}
+
+/** Тот же цикл, что `dispatchFrontier`, но через копию без заморозки. Отличие ровно одно. */
+function dispatchFrontierNoFreeze(events: readonly FrontierEvent<number>[], startSeq: number): number {
+  const ordered = orderFrontier(events, startSeq);
+  const counter: CascadeCounter = { depth: 0, events: 0 };
+  let state = FRESH;
+  let produced = 0;
+  for (const e of ordered) {
+    const commands = handler(e.seq);
+    const out = applyBatchNoFreeze(commands, state, core(e.businessTsUs), BUDGET, counter, (c, i, reason) => ({
+      kind: 'command.rejected',
+      businessTsUs: e.businessTsUs,
+      payload: { kind: c.kind, index: i, reason },
+    }));
+    state = out.state;
+    produced += out.outbox.length;
+  }
+  return produced + state.orders.length;
+}
+
 {
-  const state = {
-    rng: rngStateFromSeed(1),
-    timers: Array.from({ length: 8 }, (_, i) => ({
-      timerId: `t${i}`,
-      dueTsUs: T,
-      createdAtFrontierUs: T,
-    })),
-    orders: Array.from({ length: 8 }, (_, i) => ({ orderId: `o${i}`, state: 'accepted' as OrderState })),
-    ledger: EMPTY_LEDGER,
-  };
-
-  // ДВА числа, а не одно. Первая редакция этой атрибуции клонировала состояние на каждой итерации
-  // и потому мерила ВСЕГДА холодный случай — то есть завышала, причём ровно после того, как
-  // пропуск замороженных поддеревьев и был добавлен. Число, сделанное неверным собственной
-  // правкой, — тот же класс, что и всё остальное в этом ревью, поэтому здесь оба.
-  const coldSamples: number[] = [];
-  for (let i = 0; i < WARMUP; i += 1) deepFreeze(structuredClone(state));
-  for (let i = 0; i < ITERATIONS; i += 1) {
-    const fresh = structuredClone(state);
-    const t0 = hrtime.bigint();
-    deepFreeze(fresh);
-    const t1 = hrtime.bigint();
-    coldSamples.push(Number(t1 - t0) / 1000);
+  // ── 1. База обязана быть ТЕМ ЖЕ алгоритмом ────────────────────────────────
+  //
+  // Проверяется до замера и на корпусе, включающем оба исхода отказа: штатное отклонение
+  // (дубликат ордера) и обрыв суффикса. База, расходящаяся с оригиналом, делает разность
+  // бессмысленной, поэтому расхождение — отказ, а не предупреждение.
+  const corpus: readonly (readonly Command[])[] = [
+    handler(1),
+    handler(2),
+    [{ kind: 'place', orderId: 'dup' }, { kind: 'place', orderId: 'dup' }, { kind: 'roll' }],
+    [{ kind: 'roll' }, { kind: 'fill', price: 101 }, { kind: 'arm', timerId: 'x' }],
+    [],
+  ];
+  for (const commands of corpus) {
+    const a = applyBatch(commands, FRESH, core(T), BUDGET, { depth: 0, events: 0 }, (c, i, reason) => ({
+      kind: 'command.rejected', businessTsUs: T, payload: { kind: c.kind, index: i, reason },
+    }));
+    const b = applyBatchNoFreeze(commands, FRESH, core(T), BUDGET, { depth: 0, events: 0 }, (c, i, reason) => ({
+      kind: 'command.rejected', businessTsUs: T, payload: { kind: c.kind, index: i, reason },
+    }));
+    if (JSON.stringify(a) !== JSON.stringify(b)) {
+      throw new Error(
+        'база без заморозки разошлась с applyBatch — разность арм измеряла бы разные алгоритмы, ' +
+          'а не цену заморозки. Замер прерван.',
+      );
+    }
   }
 
-  // Тёплый: состояние уже заморожено — так выглядят 4 из 5 вызовов внутри батча, потому что
-  // `apply` возвращает объект, чьи неизменённые поддеревья уже заморожены предыдущим проходом.
-  const warm = deepFreeze(structuredClone(state));
-  const warmSamples: number[] = [];
-  for (let i = 0; i < WARMUP; i += 1) deepFreeze(warm);
-  for (let i = 0; i < ITERATIONS; i += 1) {
-    const t0 = hrtime.bigint();
-    deepFreeze(warm);
-    const t1 = hrtime.bigint();
-    warmSamples.push(Number(t1 - t0) / 1000);
+  // ── 2. Замер ЧЕРЕДОВАНИЕМ, а не фазами ────────────────────────────────────
+  //
+  // Две арм подряд по 20k итераций поймали бы дрейф машины как разницу арм — это уже стоило трёх
+  // ложных выводов подряд. Здесь арм чередуются внутри одной итерации, а порядок внутри итерации
+  // меняется по чётности, чтобы «кто первый» не превратилось в систематический сдвиг.
+  const events = frontierOf('execution');
+  for (let i = 0; i < WARMUP; i += 1) {
+    sink += dispatchFrontier(events, 0);
+    sink += dispatchFrontierNoFreeze(events, 0);
   }
 
-  const cold = stats(coldSamples);
-  const hot = stats(warmSamples);
+  const withFreeze: number[] = [];
+  const without: number[] = [];
+  for (let i = 0; i < ITERATIONS; i += 1) {
+    const freezeFirst = i % 2 === 0;
+    for (const arm of freezeFirst ? [true, false] : [false, true]) {
+      const t0 = hrtime.bigint();
+      sink += arm ? dispatchFrontier(events, 0) : dispatchFrontierNoFreeze(events, 0);
+      const t1 = hrtime.bigint();
+      (arm ? withFreeze : without).push(Number(t1 - t0) / 1000 / events.length);
+    }
+  }
+
+  const on = stats(withFreeze);
+  const off = stats(without);
+  const delta = on.p50 - off.p50;
+
   console.log('#');
-  console.log('# Атрибуция заморозки (та же машина, сравнимо с собой):');
-  console.log(`#   холодная (состояние не заморожено) : p50 ${cold.p50.toFixed(4)} мкс`);
-  console.log(`#   тёплая   (поддерево уже заморожено): p50 ${hot.p50.toFixed(4)} мкс`);
-  console.log('#');
-  console.log('# Внутри батча из 4 команд заморозка зовётся 5 раз: 1 холодный вход + 4 тёплых,');
-  console.log('# потому что `apply` возвращает объект с уже замороженными неизменёнными поддеревьями.');
-  console.log(`# Оценка вклада в один диспатч ≈ ${(cold.p50 + hot.p50 * 4).toFixed(2)} мкс.`);
-  console.log('#');
-  console.log('# ДО пропуска замороженных поддеревьев тёплого случая не было вовсе — каждый из пяти');
-  console.log('# вызовов обходил всё состояние, и вклад составлял почти всю стоимость диспатча,');
-  console.log('# причём рос вместе с накоплением ордеров, таймеров и филлов.');
+  console.log('# Атрибуция заморозки — A/B на РЕАЛЬНОМ applyBatch (та же машина, чередование арм):');
+  console.log(`#   с заморозкой  : p50 ${on.p50.toFixed(4)} мкс  (p05 ${on.p05.toFixed(4)} / p95 ${on.p95.toFixed(4)})`);
+  console.log(`#   без заморозки : p50 ${off.p50.toFixed(4)} мкс  (p05 ${off.p05.toFixed(4)} / p95 ${off.p95.toFixed(4)})`);
+  console.log(`#   вклад         : ${delta.toFixed(4)} мкс на диспатч = ${((delta / on.p50) * 100).toFixed(1)} % его стоимости`);
+
+  // ── 3. Самопроверка числа ─────────────────────────────────────────────────
+  //
+  // Замер, который не может отвергнуть собственный результат, отвечает всегда — и потому не
+  // отвечает ни на что. Отрицательная разность означает, что шум арм крупнее эффекта.
+  if (delta <= 0) {
+    console.log('#   ВНИМАНИЕ: разность неположительна — эффект меньше шума, число НЕ пригодно как арбитр.');
+  } else if (delta > on.p50) {
+    console.log('#   ВНИМАНИЕ: разность больше полной стоимости арм — прогон испорчен, число отбросить.');
+  }
 }
 
 if (sink === Number.MIN_SAFE_INTEGER) console.log('# (недостижимо; sink удерживает цикл от выбрасывания)');

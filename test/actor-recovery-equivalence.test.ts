@@ -28,6 +28,8 @@
 
 import { describe, expect, it } from 'vitest';
 import { canonicalJson } from '../src/determinism/canonical-json.js';
+import { CheckpointBoundaryViolation } from '../src/actor/checkpoint-gate.js';
+import { timestampUs } from '../src/contract/index.js';
 import {
   checkpointRoundTrip,
   initialRun,
@@ -121,29 +123,63 @@ describe('recovery-equivalence: разрез на ГРАНИЦЕ frontier — т
   });
 });
 
-describe('recovery-equivalence: ограничение формата зафиксировано, а не обойдено', () => {
+describe('recovery-equivalence: граница frontier обеспечена СТРУКТУРНО', () => {
+  // Решение владельца S2-D1, п. 2: в v1 чекпойнт разрешён только на завершённой границе frontier,
+  // и это обеспечивается API/runtime-гейтом. `inFlightFrontier` и восстановление из произвольной
+  // точки отложены до этапа live auto-resume.
+  //
+  // До гейта эта секция утверждала РАСХОЖДЕНИЕ: «чекпойнт из середины невосстановим». Утверждение
+  // было верным, но слабым — оно фиксировало последствие и оставляло само действие возможным.
+  // Теперь действие невозможно, а расхождение остаётся здесь как ПРИЧИНА, по которой гейт
+  // существует.
   const midBatch: CutPoint = { frontier: 2, eventIndex: 0, committedInBatch: 1 };
 
-  it('чекпойнт В СЕРЕДИНЕ frontier невосстановим: формат не хранит in-flight frontier', () => {
-    // Это НЕ баг теста и не баг реализации — это отсутствующий слот в §3.6. Расхождение
-    // воспроизводится: `openFrontierTimers` уже снял сработавшие таймеры из `pending`, чекпойнт
-    // помнит обрезанный `pending`, но не сам набор, и при возобновлении событие таймера исчезает.
-    //
-    // Тест утверждает РАСХОЖДЕНИЕ намеренно. Если он однажды упадёт — значит формат получил слот
-    // для in-flight frontier, и тогда сюда приезжает полноценный гейт разрезов внутри батча.
+  it('прогон, остановленный ВНУТРИ батча, оставляет гейт в фазе in-frontier', () => {
     const upTo = runFrontiers(initialRun(), 0, FRONTIERS, midBatch);
-    const resumed = resumeFrom(checkpointRoundTrip(upTo), midBatch, FRONTIERS);
+    expect(upTo.gate.phase).toBe('in-frontier');
+  });
+
+  it('чекпойнт из середины frontier ОТВЕРГАЕТСЯ гейтом, а не расходится позже', () => {
+    const upTo = runFrontiers(initialRun(), 0, FRONTIERS, midBatch);
+    expect(() => checkpointRoundTrip(upTo)).toThrow(CheckpointBoundaryViolation);
+  });
+
+  it('отказ называет причину — потерю замороженного набора таймеров', () => {
+    // Отказ без причины отправил бы следующего читателя выяснять её заново по расхождению.
+    const upTo = runFrontiers(initialRun(), 0, FRONTIERS, midBatch);
+    expect(() => checkpointRoundTrip(upTo)).toThrow(/таймеров|inFlightFrontier/);
+  });
+
+  it('на завершённой границе гейт ПРОПУСКАЕТ: запрещён момент, а не действие', () => {
+    // Без этого «гейт» мог бы запрещать всё подряд и выглядеть исправным.
+    const atBoundary = runFrontiers(initialRun(), 0, 5);
+    expect(atBoundary.gate.phase).toBe('boundary');
+    expect(() => checkpointRoundTrip(atBoundary)).not.toThrow();
+  });
+
+  it('ПОЧЕМУ гейт нужен: возобновление из середины расходится МОЛЧА', () => {
+    // Диагностика идёт мимо чекпойнта намеренно — причина расхождения не в кодировании, а в
+    // потере состояния: `openFrontierTimers` уже снял сработавшие таймеры из `pending`, а
+    // замороженный набор не хранится нигде. Восстановление такого состояния прошло бы всю
+    // валидацию `restore()` и вернуло `ok: true`.
+    const upTo = runFrontiers(initialRun(), 0, FRONTIERS, midBatch);
+    const resumed = resumeFrom(upTo, midBatch, FRONTIERS);
     expect(fingerprint(resumed)).not.toBe(fingerprint(whole));
   });
 
   it('расхождение начинается именно с ПОТЕРИ таймерного события', () => {
-    // Причина названа проверяемо, а не в комментарии: без этого «ограничение формата» было бы
-    // очередной заявкой сильнее гарантии.
+    // Причина названа проверяемо, а не в комментарии.
     const upTo = runFrontiers(initialRun(), 0, FRONTIERS, midBatch);
-    const resumed = resumeFrom(checkpointRoundTrip(upTo), midBatch, FRONTIERS);
+    const resumed = resumeFrom(upTo, midBatch, FRONTIERS);
     const timersWhole = whole.log.filter((l) => l.includes('timer:')).length;
     const timersResumed = resumed.log.filter((l) => l.includes('timer:')).length;
     expect(timersResumed).toBeLessThan(timersWhole);
+  });
+
+  it('вложенный frontier — тоже нарушение границы, а не молчаливая перезапись', () => {
+    const gate = initialRun().gate;
+    gate.openFrontier(timestampUs(1));
+    expect(() => gate.openFrontier(timestampUs(2))).toThrow(CheckpointBoundaryViolation);
   });
 });
 

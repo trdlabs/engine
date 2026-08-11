@@ -15,13 +15,13 @@ import { rngStateFromSeed } from '../src/actor/rng.js';
 import {
   AUTHOR_STATE_MAX_DEPTH,
   AUTHOR_STATE_UPDATE_RULE,
-  encodeCheckpoint,
   replaceAuthorState,
   restore,
   validateAuthorState,
   type Checkpoint,
   type CheckpointIdentity,
 } from '../src/actor/checkpoint.js';
+import { createCheckpointGate } from '../src/actor/checkpoint-gate.js';
 
 const IDENTITY: CheckpointIdentity = {
   bundleDigest: 'sha256:abc',
@@ -231,9 +231,12 @@ describe('чекпойнт: форма проверяется ЦЕЛИКОМ, а
 
 describe('чекпойнт: каноническое кодирование', () => {
   it('порядок ключей детерминирован и не зависит от порядка вставки', () => {
+    // Кодирование идёт через гейт: свободного кодировщика больше нет — он делал запись возможной
+    // внутри открытого frontier (решение владельца S2-D1, п. 2).
+    const gate = createCheckpointGate();
     const a: Checkpoint = { ...base, authorState: { z: 1, a: 2 } };
     const b: Checkpoint = { ...base, authorState: { a: 2, z: 1 } };
-    expect(encodeCheckpoint(a)).toBe(encodeCheckpoint(b));
+    expect(gate.takeCheckpoint(a)).toBe(gate.takeCheckpoint(b));
   });
 
   it('RNG лежит в engineState, а НЕ в авторском слоте', () => {
