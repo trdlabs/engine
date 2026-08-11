@@ -3,3 +3,5 @@ onlyBuiltDependencies:
   - esbuild
 allowBuilds:
   esbuild: set this to true or false
+minimumReleaseAgeExclude:
+  - '@trdlabs/sdk@0.15.0'
