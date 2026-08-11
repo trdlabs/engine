@@ -166,3 +166,55 @@ describe('батч: пустой и полностью успешный случ
     expect(out.outbox.map((e) => e.payload)).toEqual(['a#0', 'b#0']);
   });
 });
+
+describe('батч: атомарность держится ЗАМОРОЗКОЙ, а не комментарием', () => {
+  // Первая редакция объявляла «отклонённая или упавшая команда не имеет частичных эффектов по
+  // построению» и держала это одним комментарием: apply получала изменяемое состояние и могла
+  // мутировать его, а затем бросить. Ревью воспроизвело исход — committed:0, halt:boom, а поле
+  // состояния уже изменено. Заявка была сильнее гарантии.
+
+  const mutating: BatchCore<string, { n: number }> = {
+    validate: () => ({ ok: true }),
+    apply: (_c, s) => {
+      (s as { n: number }).n += 1; // попытка мутации ЧУЖОГО состояния
+      throw new Error('boom');
+    },
+  };
+
+  it('мутация состояния внутри apply невозможна: она сама становится броском', () => {
+    const initial = { n: 0 };
+    const out = applyBatch(['x'], initial, mutating, BUDGET, fresh(), rejection);
+    expect(out.halt).not.toBeNull();
+    expect(out.committed).toBe(0);
+    // ГЛАВНОЕ: исходное состояние НЕ изменено. Именно это и было сломано.
+    expect(initial.n).toBe(0);
+    expect(out.state.n).toBe(0);
+  });
+
+  it('состояние, переданное в apply, заморожено ГЛУБОКО', () => {
+    let captured: unknown;
+    const spy: BatchCore<string, { nested: { v: number } }> = {
+      validate: () => ({ ok: true }),
+      apply: (_c, s) => {
+        captured = s;
+        return { state: s, events: [] };
+      },
+    };
+    applyBatch(['x'], { nested: { v: 1 } }, spy, BUDGET, fresh(), rejection);
+    expect(Object.isFrozen(captured)).toBe(true);
+    expect(Object.isFrozen((captured as { nested: object }).nested)).toBe(true);
+  });
+
+  it('результат apply тоже замораживается — иначе испортила бы следующая команда', () => {
+    const seen: boolean[] = [];
+    const spy: BatchCore<string, { n: number }> = {
+      validate: (_c, s) => {
+        seen.push(Object.isFrozen(s));
+        return { ok: true };
+      },
+      apply: (_c, s) => ({ state: { n: s.n + 1 }, events: [] }),
+    };
+    applyBatch(['a', 'b'], { n: 0 }, spy, BUDGET, fresh(), rejection);
+    expect(seen).toEqual([true, true]);
+  });
+});

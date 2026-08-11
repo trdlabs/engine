@@ -55,6 +55,14 @@ export interface EngineState {
   readonly timers: readonly ScheduledTimer[];
   readonly orders: readonly { readonly orderId: string; readonly state: OrderState }[];
   readonly ledger: Ledger;
+  /**
+   * Последний `seq`, эффекты которого зафиксированы в этом состоянии.
+   *
+   * Без него чекпойнт не отвечает на вопрос «докуда я дошёл»: восстановившийся актор либо
+   * переиграет уже применённые события, либо пропустит неприменённые, и оба исхода выглядят как
+   * нормальная работа. Именно на этом поле стоит gap/duplicate guard при возобновлении.
+   */
+  readonly lastCommittedSeq: number;
 }
 
 /**
@@ -178,6 +186,81 @@ export function replaceAuthorState(checkpoint: Checkpoint, next: unknown): Check
   return { ...checkpoint, authorState: next };
 }
 
+const ORDER_STATES: ReadonlySet<string> = new Set<OrderState>([
+  'pending_new',
+  'accepted',
+  'partially_filled',
+  'cancel_pending',
+  'filled',
+  'canceled',
+  'rejected',
+]);
+
+function isFiniteNumber(v: unknown): v is number {
+  return typeof v === 'number' && Number.isFinite(v);
+}
+
+/**
+ * Проверить состояние ядра целиком. Возвращает причину отказа либо `null`.
+ *
+ * Проверяются и ЧИСЛОВЫЕ ИНВАРИАНТЫ, а не только наличие полей: `NaN` в `qty` или `avgPrice`
+ * пройдёт любую проверку на «поле есть» и сломается позже, причём сравнением, которое всегда ложно.
+ */
+function validateEngineState(v: unknown): string | null {
+  if (typeof v !== 'object' || v === null) return 'engineState отсутствует или не объект';
+  const s = v as Record<string, unknown>;
+
+  if (!isRngState(s.rng)) return 'engineState.rng невалидно';
+
+  if (!isFiniteNumber(s.lastCommittedSeq) || !Number.isSafeInteger(s.lastCommittedSeq) || s.lastCommittedSeq < -1) {
+    return `engineState.lastCommittedSeq невалиден: ${String(s.lastCommittedSeq)} (-1 означает «ничего не применено»)`;
+  }
+
+  if (!Array.isArray(s.timers)) return 'engineState.timers отсутствует или не массив';
+  for (const [i, t] of s.timers.entries()) {
+    if (typeof t !== 'object' || t === null) return `engineState.timers[${i}] не объект`;
+    const timer = t as Record<string, unknown>;
+    if (typeof timer.timerId !== 'string' || timer.timerId === '') return `engineState.timers[${i}].timerId невалиден`;
+    if (!isFiniteNumber(timer.dueTsUs)) return `engineState.timers[${i}].dueTsUs невалиден`;
+    if (!isFiniteNumber(timer.createdAtFrontierUs)) return `engineState.timers[${i}].createdAtFrontierUs невалиден`;
+  }
+
+  if (!Array.isArray(s.orders)) return 'engineState.orders отсутствует или не массив';
+  for (const [i, o] of s.orders.entries()) {
+    if (typeof o !== 'object' || o === null) return `engineState.orders[${i}] не объект`;
+    const order = o as Record<string, unknown>;
+    if (typeof order.orderId !== 'string' || order.orderId === '') return `engineState.orders[${i}].orderId невалиден`;
+    if (typeof order.state !== 'string' || !ORDER_STATES.has(order.state)) {
+      return `engineState.orders[${i}].state '${String(order.state)}' вне замкнутого союза`;
+    }
+  }
+
+  const ledger = s.ledger;
+  if (typeof ledger !== 'object' || ledger === null) return 'engineState.ledger отсутствует или не объект';
+  const l = ledger as Record<string, unknown>;
+  for (const field of ['qty', 'avgPrice', 'realizedPnl'] as const) {
+    if (!isFiniteNumber(l[field])) return `engineState.ledger.${field} невалиден: ${String(l[field])}`;
+  }
+  if (!Array.isArray(l.fills)) return 'engineState.ledger.fills не массив';
+  // Инвариант, который нельзя вывести из типов: flat-позиция не имеет времени открытия, а
+  // ненулевая — имеет. Рассогласование означает, что ledger собран не тем, кто его понимает.
+  if (l.qty === 0 && l.openedAtUs !== null) return 'engineState.ledger: flat-позиция с openedAtUs';
+  if (l.qty !== 0 && !isFiniteNumber(l.openedAtUs)) return 'engineState.ledger: ненулевая позиция без openedAtUs';
+
+  return null;
+}
+
+/** Проверить recovery-состояние проекции. Отсутствие секции — отказ, а не пустой дефолт. */
+function validateProjectionState(v: unknown): string | null {
+  if (typeof v !== 'object' || v === null) return 'projectionRecoveryState отсутствует или не объект';
+  const p = v as Record<string, unknown>;
+  if (!Array.isArray(p.boundedHistory)) return 'projectionRecoveryState.boundedHistory не массив';
+  if (typeof p.indicatorAccumulators !== 'object' || p.indicatorAccumulators === null) {
+    return 'projectionRecoveryState.indicatorAccumulators отсутствует или не объект';
+  }
+  return null;
+}
+
 /** Исход попытки восстановления. */
 export type RestoreOutcome =
   | { readonly ok: true; readonly checkpoint: Checkpoint }
@@ -213,9 +296,18 @@ export function restore(raw: unknown, current: CheckpointIdentity): RestoreOutco
     }
   }
 
-  if (!isRngState(cp.engineState?.rng)) {
-    return { ok: false, reason: 'состояние RNG невалидно' };
-  }
+  // ── Полная форма, а не две вложенные секции ────────────────────────────────
+  //
+  // Первая редакция проверяла identity, RNG и авторский слот, после чего делала cast. Объект без
+  // `timers`, `orders`, `ledger` и всего `projectionRecoveryState` возвращался как `ok: true` —
+  // ревью это воспроизвело. Для НЕДОВЕРЕННОГО входа выборочная проверка равносильна отсутствию
+  // проверки: пропущенная секция всплывёт не здесь, а в первом обращении к ней, то есть посреди
+  // торговли и без указания на чекпойнт как на источник.
+  const shape = validateEngineState(cp.engineState);
+  if (shape !== null) return { ok: false, reason: shape };
+
+  const projection = validateProjectionState(cp.projectionRecoveryState);
+  if (projection !== null) return { ok: false, reason: projection };
 
   const violations = validateAuthorState(cp.authorState);
   if (violations.length > 0) {

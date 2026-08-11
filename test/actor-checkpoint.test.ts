@@ -38,6 +38,7 @@ const base: Checkpoint = {
     timers: [],
     orders: [],
     ledger: EMPTY_LEDGER,
+    lastCommittedSeq: -1,
   },
   projectionRecoveryState: { boundedHistory: [], indicatorAccumulators: {} },
 };
@@ -172,12 +173,59 @@ describe('чекпойнт: недоверенный вход', () => {
     const bad = { ...base, engineState: { ...base.engineState, rng: { a: -1 } } };
     const out = restore(bad, IDENTITY);
     expect(out.ok).toBe(false);
-    if (!out.ok) expect(out.reason).toMatch(/RNG/);
+    if (!out.ok) expect(out.reason).toMatch(/engineState\.rng/);
   });
 
   it('невалидный авторский слот в чекпойнте отвергается при восстановлении', () => {
     const bad = { ...base, authorState: { x: NaN } };
     expect(restore(bad, IDENTITY).ok).toBe(false);
+  });
+});
+
+describe('чекпойнт: форма проверяется ЦЕЛИКОМ, а не двумя участками', () => {
+  // Первая редакция проверяла identity, RNG и авторский слот, после чего делала cast: объект без
+  // timers/orders/ledger и всего projectionRecoveryState возвращался как ok:true. Для недоверенного
+  // входа выборочная проверка равносильна отсутствию проверки — пропущенная секция всплывёт не
+  // здесь, а в первом обращении к ней, посреди торговли и без указания на чекпойнт как источник.
+
+  it.each([
+    ['timers', { ...base.engineState, timers: undefined }],
+    ['orders', { ...base.engineState, orders: undefined }],
+    ['ledger', { ...base.engineState, ledger: undefined }],
+    ['lastCommittedSeq', { ...base.engineState, lastCommittedSeq: undefined }],
+  ])('отсутствующий engineState.%s — отказ', (field, engineState) => {
+    const out = restore({ ...base, engineState }, IDENTITY);
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.reason).toContain(field);
+  });
+
+  it('отсутствующий projectionRecoveryState — отказ, а не пустой дефолт', () => {
+    const { projectionRecoveryState: _drop, ...without } = base as unknown as Record<string, unknown>;
+    const out = restore(without, IDENTITY);
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.reason).toMatch(/projectionRecoveryState/);
+  });
+
+  it('состояние ордера вне замкнутого союза — отказ', () => {
+    const bad = { ...base, engineState: { ...base.engineState, orders: [{ orderId: 'o1', state: 'выдуманное' }] } };
+    const out = restore(bad, IDENTITY);
+    expect(out.ok).toBe(false);
+    if (!out.ok) expect(out.reason).toMatch(/вне замкнутого союза/);
+  });
+
+  it('ЧИСЛОВЫЕ инварианты ledger проверяются, а не только наличие полей', () => {
+    // NaN в qty пройдёт любую проверку на «поле есть» и сломается позже — сравнением, которое
+    // всегда ложно.
+    const nan = { ...base, engineState: { ...base.engineState, ledger: { ...EMPTY_LEDGER, qty: NaN } } };
+    expect(restore(nan, IDENTITY).ok).toBe(false);
+  });
+
+  it('рассогласование qty и openedAtUs — отказ', () => {
+    // Инвариант, невыводимый из типов: flat не имеет времени открытия, ненулевая позиция имеет.
+    const flatWithTime = { ...base, engineState: { ...base.engineState, ledger: { ...EMPTY_LEDGER, qty: 0, openedAtUs: timestampUs(1) } } };
+    expect(restore(flatWithTime, IDENTITY).ok).toBe(false);
+    const openWithout = { ...base, engineState: { ...base.engineState, ledger: { ...EMPTY_LEDGER, qty: 1, openedAtUs: null } } };
+    expect(restore(openWithout, IDENTITY).ok).toBe(false);
   });
 });
 

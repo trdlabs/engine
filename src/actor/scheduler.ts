@@ -102,7 +102,22 @@ function compareKey(a: FrontierEvent, b: FrontierEvent): number {
  * порядком завершения асинхронных чтений, ради ухода от которого ключ и написан. Поэтому равенство
  * по ключу трактуется как ОШИБКА КЛЮЧА и падает, а не разрешается тихо.
  */
-export function orderFrontier<P>(events: readonly FrontierEvent<P>[]): readonly SequencedEvent<P>[] {
+export function orderFrontier<P>(
+  events: readonly FrontierEvent<P>[],
+  /**
+   * Первый `seq`, который будет назначен. Обязателен и НЕ имеет дефолта.
+   *
+   * Первая редакция нумеровала внутри frontier от нуля, и два последовательных frontier давали
+   * `[0]`, `[0]`. Это выглядело как работающая нумерация ровно до того момента, когда её попытались
+   * бы использовать по назначению: `seq` актор-локален и НЕПРЕРЫВЕН по построению — на нём стоят
+   * gap/duplicate guard и привязка чекпойнта к `lastCommittedSeq`. Сбрасывающийся счётчик делает
+   * и то и другое бессмысленным, причём молча.
+   *
+   * Дефолта нет намеренно: значение по умолчанию вернуло бы ровно тот же сброс для вызывающего,
+   * который забыл передать состояние.
+   */
+  startSeq: number,
+): readonly SequencedEvent<P>[] {
   // Валидация ОТДЕЛЬНЫМ проходом, а не побочным эффектом сравнения. `Array.sort` не зовёт
   // компаратор на массиве длины 0 или 1, поэтому проверка внутри `compareKey` пропускала бы ровно
   // тот случай, где событие пришло одно — а одинокое рыночное событие без вида так же неверно, как
@@ -121,7 +136,41 @@ export function orderFrontier<P>(events: readonly FrontierEvent<P>[]): readonly 
       );
     }
   }
-  return sorted.map((e, i) => ({ ...e, seq: i }));
+  if (!Number.isSafeInteger(startSeq) || startSeq < 0) {
+    throw new Error(`scheduler: startSeq обязан быть неотрицательным safe-целым, получено ${startSeq}`);
+  }
+  return sorted.map((e, i) => ({ ...e, seq: startSeq + i }));
+}
+
+/**
+ * Следующий `seq` после закрытия frontier — то, что вызывающий обязан сохранить и передать дальше.
+ *
+ * Отдельная функция, а не «возьми последний + 1»: на ПУСТОМ frontier последнего нет, и вызывающий,
+ * считающий сам, либо уронил бы счётчик, либо тихо повторил бы предыдущее значение. Пустой frontier
+ * законен — он означает «в этот момент ничего не наблюдалось», а не «момента не было».
+ */
+export function nextSeq(startSeq: number, ordered: readonly SequencedEvent<unknown>[]): number {
+  return startSeq + ordered.length;
+}
+
+/**
+ * Проверить непрерывность последовательности, пришедшей из чекпойнта или с транспорта.
+ *
+ * Gap означает потерянное событие, duplicate — повторно доставленное; и то и другое ломает
+ * причинность, но по-разному, поэтому и названы они по-разному. Молчаливое «пересчитаем seq
+ * заново» вернуло бы ту же дыру, ради закрытия которой guard существует.
+ */
+export function assertContiguous(seqs: readonly number[], expectedFirst: number): void {
+  for (let i = 0; i < seqs.length; i += 1) {
+    const want = expectedFirst + i;
+    const got = seqs[i]!;
+    if (got === want) continue;
+    throw new Error(
+      got > want
+        ? `scheduler: разрыв seq — ожидался ${want}, получен ${got} (потеряно ${got - want} событий)`
+        : `scheduler: повтор seq — ожидался ${want}, получен ${got} (событие доставлено дважды)`,
+    );
+  }
 }
 
 /** Приоритет фазы — экспортируется для тестов и для scheduler'а каскада. */

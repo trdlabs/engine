@@ -42,6 +42,32 @@ export interface BatchCore<C, S> {
   apply(command: C, state: S): Applied<S>;
 }
 
+/**
+ * Глубокая заморозка состояния перед передачей в чужие руки.
+ *
+ * ПОЧЕМУ ЭТО НЕ ПАРАНОЙЯ. Первая редакция объявляла «отклонённая или упавшая команда не имеет
+ * частичных эффектов ПО ПОСТРОЕНИЮ» и держала это утверждение одним комментарием: `apply` получала
+ * изменяемое состояние и могла мутировать его, а затем бросить. Ревью воспроизвело исход —
+ * `committed: 0`, `halt: boom`, а поле состояния уже изменено. Заявка была сильнее гарантии.
+ *
+ * Заморозка делает её ровно такой, какой заявлена: мутация в strict-режиме (а модули ES всегда
+ * strict) бросает `TypeError`, и бросок ловится тем же обработчиком, что и любой другой — то есть
+ * приводит к halt с сохранённым префиксом, а не к тихому повреждению.
+ *
+ * Цена — обход состояния на каждую команду. Она сознательная: невоспроизводимое повреждение
+ * бухгалтерии дороже обхода, и это ровно тот размен, который уже сделан в пользу Decimal.
+ */
+function deepFreeze<T>(value: T, seen = new WeakSet<object>()): T {
+  if (typeof value !== 'object' || value === null) return value;
+  const obj = value as unknown as object;
+  if (seen.has(obj)) return value;
+  seen.add(obj);
+  for (const key of Object.keys(obj).sort()) {
+    deepFreeze((obj as Record<string, unknown>)[key], seen);
+  }
+  return Object.freeze(value);
+}
+
 /** Кумулятивные бюджеты frontier (§3.8.4). Per-dispatch бюджеты живут отдельно (§3.10). */
 export interface CascadeBudget {
   /** Максимальная глубина каскада «команда → событие → команда» внутри одного business-момента. */
@@ -111,7 +137,9 @@ export function applyBatch<C, S>(
   rejectionEvent: (command: C, index: number, reason: string) => OutboxEvent,
 ): BatchOutcome<S> {
   const outbox: OutboxEvent[] = [];
-  let state = initialState;
+  // Замораживается ОДИН РАЗ на входе и затем каждый результат `apply`: иначе первая же команда
+  // вернула бы незамороженное состояние, и вторая получила бы возможность его испортить.
+  let state = deepFreeze(initialState);
   let committed = 0;
 
   // Глубина каскада считается ДО применения: батч, пришедший на глубине, уже исчерпавшей бюджет,
@@ -165,7 +193,7 @@ export function applyBatch<C, S>(
       };
     }
 
-    state = applied.state;
+    state = deepFreeze(applied.state);
     committed += 1;
 
     for (const e of applied.events) {

@@ -175,8 +175,42 @@ try {
     if (trace.summary.barsProcessed !== 2) throw new Error('simulate() did not process the tape');
     console.log('clean consumer: import + simulate() OK');
   `;
+  const actorSmoke = `
+    // Актор-ядро S2 обязано быть доступно ПОТРЕБИТЕЛЮ, а не только тестам репозитория.
+    //
+    // Этой проверки не было, и её отсутствие стоило дорого: модули лежали в src/actor/, тесты
+    // импортировали их напрямую, все гейты были зелёные — а собранный пакет не отдавал наружу ни
+    // одного из них. S3 не смог бы потребить результат S2. Гейт был уже того, что объявлял:
+    // он проверял ровно старый simulate() и потому не мог этого увидеть.
+    import * as engine from '@trdlabs/engine';
+    const required = [
+      'orderFrontier', 'nextSeq', 'assertContiguous',
+      'applyBatch',
+      'openFrontierTimers', 'scheduleTimer', 'cancelTimer',
+      'applyFill', 'applyFunding', 'positionView', 'fillsCausedBy', 'EMPTY_LEDGER',
+      'transition', 'cancelRejected', 'isTerminal', 'checkCommandCount', 'checkDispatchDuration',
+      'matchBar', 'isEligibleForBar',
+      'createCheckpointableRng', 'rngStateFromSeed', 'isRngState',
+      'restore', 'replaceAuthorState', 'validateAuthorState', 'encodeCheckpoint',
+      'traceToMicroseconds', 'traceToMillisProjection',
+    ];
+    const missing = required.filter((n) => typeof engine[n] !== 'function' && engine[n] === undefined);
+    if (missing.length > 0) {
+      throw new Error('actor API не экспортирован потребителю: ' + missing.join(', '));
+    }
+    // Не только «имя есть», но и «работает через публичный путь»: экспорт, падающий при первом
+    // вызове, — та же сломанная поставка, что и отсутствующий.
+    const ordered = engine.orderFrontier(
+      [{ businessTsUs: 1, phase: 'execution', stableSubscriptionId: 's', sourceSequence: 0, payload: 1 }],
+      7,
+    );
+    if (ordered[0].seq !== 7) throw new Error('orderFrontier не принял startSeq через публичный путь');
+    console.log('clean consumer: actor API (' + required.length + ' экспортов) OK');
+  `;
   writeFileSync(join(project, 'smoke.mjs'), smoke);
   process.stdout.write(run('node', ['smoke.mjs'], project));
+  writeFileSync(join(project, 'actor-smoke.mjs'), actorSmoke);
+  process.stdout.write(run('node', ['actor-smoke.mjs'], project));
 } catch (err) {
   problems.push(`clean-consumer run failed: ${err.stderr?.toString().trim() || err.message}`);
 } finally {
