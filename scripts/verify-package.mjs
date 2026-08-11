@@ -42,18 +42,116 @@ try {
   // Apache-2.0 §4(d): a distribution of a work that carries a NOTICE file must carry it along.
   // Easy to lose, because `files: ["dist"]` only auto-includes LICENSE and README.
 
+  // ── Брендированные типы: одно объявление, а не копия ───────────────────────
+  //
+  // 083 S1 ввёл в `@trdlabs/sdk` номинальные типы (`TimestampUs`/`DurationUs` на `unique symbol`).
+  // У номинального типа идентичность задаётся МЕСТОМ ОБЪЯВЛЕНИЯ: два объявления одинаковой формы —
+  // два разных типа, и значение одного не подходит туда, где ждут другой.
+  //
+  // Этот пакет реэкспортирует словарь контракта наружу (`src/contract/index.ts`), поэтому копия
+  // объявления в его `.d.ts` рассыпала бы seam у каждого потребителя. Проверка не гипотетическая:
+  // в `@trdlabs/backtester-sdk` ровно это и случилось — `bundledPackages` в api-extractor
+  // раскатывал типы ядра независимо по каждой точке входа и дал три отдельных
+  // `declare const DURATION_US: unique symbol`. Здесь сборка идёт голым `tsc`, который не бандлит,
+  // — но «сегодня не бандлит» это свойство конфигурации, а не гарантия: добавленный шаг роллапа
+  // вернул бы дефект молча.
+  const dtsFiles = listed.filter((f) => f.endsWith('.d.ts'));
+  for (const rel of dtsFiles) {
+    const body = run('tar', ['-xzOf', tarball, `package/${rel}`]);
+    if (/\bunique symbol\b/.test(body)) {
+      problems.push(
+        `${rel} DECLARES a \`unique symbol\`. Брендированные типы обязаны ИМПОРТИРОВАТЬСЯ из ` +
+          `@trdlabs/sdk, а не объявляться здесь: копия объявления — отдельная номинальная ` +
+          `идентичность, и значение sdk перестанет подходить туда, где движок ждёт свой тип.`,
+      );
+    }
+  }
+
   // ── The artifact as a consumer actually receives it ────────────────────────
   const project = join(work, 'consumer');
   run('mkdir', ['-p', project]);
+  // Потребитель держит И этот пакет, И `@trdlabs/sdk` напрямую — ровно так живёт backtester.
+  // Односторонняя установка (только движок) не смогла бы показать расхождение идентичностей: оно
+  // возникает именно там, где два пути к одному словарю встречаются в одном дереве.
+  const sdkPin = pkg.dependencies['@trdlabs/sdk'];
   writeFileSync(
     join(project, 'package.json'),
     JSON.stringify(
-      { name: 'engine-clean-consumer', private: true, type: 'module', dependencies: { '@trdlabs/engine': `file:${tarball}` } },
+      {
+        name: 'engine-clean-consumer',
+        private: true,
+        type: 'module',
+        dependencies: { '@trdlabs/engine': `file:${tarball}`, '@trdlabs/sdk': sdkPin },
+        devDependencies: { typescript: pkg.devDependencies.typescript },
+      },
       null,
       2,
     ),
   );
   run('pnpm', ['install', '--ignore-workspace', '--no-frozen-lockfile'], project);
+
+  // ── Одна установка sdk, а не две ───────────────────────────────────────────
+  //
+  // Физический слой того же вопроса: две установки — два места объявления `unique symbol`, значит
+  // два разных номинальных типа при одинаковой форме. Считается по каталогу store, а не по
+  // манифестам: манифест говорит, что попросили, а store — что получилось.
+  const storeEntries = run('ls', [join(project, 'node_modules', '.pnpm')])
+    .split('\n')
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith('@trdlabs+sdk@'));
+  if (storeEntries.length !== 1) {
+    problems.push(
+      `у потребителя ${storeEntries.length} установок @trdlabs/sdk (${storeEntries.join(', ') || 'ни одной'}), ` +
+        `а должна быть ровно одна: каждая копия объявляет свои \`unique symbol\`, и брендированные ` +
+        `типы разных копий не взаимозаменяемы.`,
+    );
+  }
+
+  // ── Номинальная идентичность: проверяется ТИПАМИ, иначе непроверяема ───────
+  //
+  // Рантайм тут бессилен: брендированный `TimestampUs` в рантайме обычное число, и любая проверка
+  // значением пройдёт при любом числе объявлений. Расхождение видно только компилятору, и только
+  // при `skipLibCheck: false` — иначе tsc не заглядывает в `.d.ts` зависимостей и молча пропускает
+  // ровно тот случай, ради которого проверка написана.
+  writeFileSync(
+    join(project, 'tsconfig.json'),
+    JSON.stringify(
+      {
+        compilerOptions: {
+          strict: true,
+          skipLibCheck: false,
+          module: 'nodenext',
+          moduleResolution: 'nodenext',
+          target: 'es2022',
+          noEmit: true,
+        },
+        files: ['identity.ts'],
+      },
+      null,
+      2,
+    ),
+  );
+  writeFileSync(
+    join(project, 'identity.ts'),
+    [
+      "import { timestampUs } from '@trdlabs/sdk/research-contract';",
+      "import type { TimestampUs as EngineTimestampUs, DurationUs as EngineDurationUs } from '@trdlabs/engine';",
+      "import { diffUs as engineDiffUs } from '@trdlabs/engine';",
+      '',
+      '// Значение построено словарём ПОТРЕБИТЕЛЯ, а принимается там, где объявлен тип ДВИЖКА.',
+      '// Две копии sdk дали бы здесь ошибку присваивания при совпадающей форме — это и есть',
+      '// разница между структурной и номинальной совместимостью.',
+      'const fromConsumer = timestampUs(1_700_000_000_000_000);',
+      'const asEngine: EngineTimestampUs = fromConsumer;',
+      '',
+      '// И обратно: функция, реэкспортированная движком, принимает значение потребителя и отдаёт',
+      '// тип, который потребитель обязан узнать своим.',
+      'const delta: EngineDurationUs = engineDiffUs(asEngine, fromConsumer);',
+      'void delta;',
+      '',
+    ].join('\n'),
+  );
+  run('pnpm', ['exec', 'tsc', '--noEmit'], project);
 
   // A real run, not just an import: an entrypoint that resolves but throws on first use is still a
   // broken release.
@@ -77,8 +175,69 @@ try {
     if (trace.summary.barsProcessed !== 2) throw new Error('simulate() did not process the tape');
     console.log('clean consumer: import + simulate() OK');
   `;
+  const actorSmoke = `
+    // Актор-ядро S2 обязано быть доступно ПОТРЕБИТЕЛЮ, а не только тестам репозитория.
+    //
+    // Этой проверки не было, и её отсутствие стоило дорого: модули лежали в src/actor/, тесты
+    // импортировали их напрямую, все гейты были зелёные — а собранный пакет не отдавал наружу ни
+    // одного из них. S3 не смог бы потребить результат S2. Гейт был уже того, что объявлял:
+    // он проверял ровно старый simulate() и потому не мог этого увидеть.
+    import * as engine from '@trdlabs/engine';
+    const required = [
+      'orderFrontier', 'nextSeq', 'assertContiguous',
+      'applyBatch',
+      'openFrontierTimers', 'scheduleTimer', 'cancelTimer',
+      'applyFill', 'applyFunding', 'positionView', 'fillsCausedBy', 'EMPTY_LEDGER',
+      'transition', 'cancelRejected', 'isTerminal', 'checkCommandCount', 'checkDispatchDuration',
+      'matchBar', 'isEligibleForBar',
+      'createCheckpointableRng', 'rngStateFromSeed', 'isRngState',
+      'restore', 'replaceAuthorState', 'validateAuthorState',
+      'createCheckpointGate', 'CheckpointBoundaryViolation',
+      'traceToMicroseconds', 'traceToMillisProjection',
+    ];
+    // Свободного кодировщика в поверхности пакета быть НЕ должно: он делал запись чекпойнта
+    // возможной в любой момент, в том числе внутри открытого frontier (решение S2-D1, п. 2).
+    // Проверка именно на ОТСУТСТВИЕ — вернуть экспорт обратно случайной правкой легче, чем
+    // заметить это на ревью.
+    if (engine.encodeCheckpoint !== undefined) {
+      throw new Error('encodeCheckpoint снова в поверхности пакета — граница чекпойнта обходима');
+    }
+    const missing = required.filter((n) => typeof engine[n] !== 'function' && engine[n] === undefined);
+    if (missing.length > 0) {
+      throw new Error('actor API не экспортирован потребителю: ' + missing.join(', '));
+    }
+    // Не только «имя есть», но и «работает через публичный путь»: экспорт, падающий при первом
+    // вызове, — та же сломанная поставка, что и отсутствующий.
+    const ordered = engine.orderFrontier(
+      [{ businessTsUs: 1, phase: 'execution', stableSubscriptionId: 's', sourceSequence: 0, payload: 1 }],
+      7,
+    );
+    if (ordered[0].seq !== 7) throw new Error('orderFrontier не принял startSeq через публичный путь');
+
+    // Гейт границы проверяется ПОВЕДЕНИЕМ, а не наличием имени: экспортированная фабрика, которая
+    // пропускает чекпойнт внутри frontier, — это отсутствующий гейт под правильной вывеской.
+    const gate = engine.createCheckpointGate();
+    const cp = {
+      identity: { bundleDigest: 'd', contractVersion: 'c', engineVersion: 'e', projectionVersion: 'p' },
+      authorState: {},
+      engineState: { rng: engine.rngStateFromSeed(1), timers: [], orders: [], ledger: engine.EMPTY_LEDGER, lastCommittedSeq: -1 },
+      projectionRecoveryState: { boundedHistory: [], indicatorAccumulators: {} },
+    };
+    if (typeof gate.takeCheckpoint(cp) !== 'string') {
+      throw new Error('гейт не отдал чекпойнт на границе');
+    }
+    gate.openFrontier(1);
+    let refused = false;
+    try { gate.takeCheckpoint(cp); } catch (e) { refused = e instanceof engine.CheckpointBoundaryViolation; }
+    if (!refused) throw new Error('гейт ПРОПУСТИЛ чекпойнт внутри открытого frontier');
+    gate.closeFrontier();
+
+    console.log('clean consumer: actor API (' + required.length + ' экспортов) + граница чекпойнта OK');
+  `;
   writeFileSync(join(project, 'smoke.mjs'), smoke);
   process.stdout.write(run('node', ['smoke.mjs'], project));
+  writeFileSync(join(project, 'actor-smoke.mjs'), actorSmoke);
+  process.stdout.write(run('node', ['actor-smoke.mjs'], project));
 } catch (err) {
   problems.push(`clean-consumer run failed: ${err.stderr?.toString().trim() || err.message}`);
 } finally {

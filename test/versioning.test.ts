@@ -63,7 +63,13 @@ describe('engine versioning', () => {
   it('trace format version and semantics version are independent knobs', () => {
     // Shape vs behaviour. Decision (A) exists because conflating them makes every hash hostage to
     // the wrong kind of change.
-    expect(TRACE_FORMAT_VERSION).toBe('1');
+    // 083 S2 поднял формат '1' → '2': метки времени в trace переехали в микросекунды. Пин
+    // литерала обязан двигаться вместе с бампом — он для того и стоит, чтобы бамп нельзя было
+    // провести молча.
+    expect(TRACE_FORMAT_VERSION).toBe('2');
     expect(typeof ENGINE_VERSION).toBe('string');
+    // «Независимые ручки» выражены СРАВНЕНИЕМ, а не одним пином: пин ловит бамп, но не доказывает
+    // независимость. Совпади они значением — и конфляция вернулась бы при зелёном тесте.
+    expect(TRACE_FORMAT_VERSION).not.toBe(ENGINE_VERSION);
   });
 });

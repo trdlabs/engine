@@ -249,6 +249,41 @@ export function addF64(a: number, b: number): number {
 }
 
 /** `a / b` — размер из нотионала и цены исполнения. */
+/**
+ * Накопление реализованного PnL при закрытии части позиции — ОДНИМ выражением (S2, ledger).
+ *
+ * `acc + (exit − entry) · qty · dir − fee` держится в полной десятичной точности целиком и выходит
+ * во float64 ровно один раз. Разложить на `sub(add(acc, pnl), fee)` нельзя: выходов стало бы три, и
+ * промежуточные округлились бы до ближайшего double раньше времени — ровно то, ради чего этот
+ * модуль и заведён.
+ *
+ * `dir` = +1 для закрытия лонга (продажа выше входа прибыльна), −1 для закрытия шорта.
+ */
+export function accrueRealized(
+  acc: number,
+  exitPrice: number,
+  entryPrice: number,
+  qty: number,
+  dir: 1 | -1,
+  fee: number,
+): number {
+  return new Decimal(acc)
+    .plus(new Decimal(exitPrice).minus(entryPrice).times(qty).times(dir))
+    .minus(fee)
+    .toNumber();
+}
+
+/**
+ * Изменение чистой экспозиции — одним выражением.
+ *
+ * Отдельно от `add` намеренно: здесь важна ТОЧНОСТЬ НУЛЯ. Полный выход из дробной позиции лестницей
+ * (0.15 → 3 × 0.05) обязан дать ровно 0, а не 1.39e-17 с фиктивным флипом. На float это и случилось
+ * в 083 S1; Decimal складывает такие величины точно, и тест `ledger` это пиннит, а не предполагает.
+ */
+export function netQty(current: number, signedDelta: number): number {
+  return new Decimal(current).plus(signedDelta).toNumber();
+}
+
 export function div(a: number, b: number): number {
   return new Decimal(a).div(b).toNumber();
 }

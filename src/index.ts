@@ -41,3 +41,121 @@ export {
   STANDARD_NO_FUNDING_1,
   resolveNamedRealityModel,
 } from './reality/standard-1.js';
+
+// ── Актор-ядро (083 S2) ──────────────────────────────────────────────────────
+//
+// Экспортируется ЯВНЫМ списком, а не `export *`: поверхность актор-ядра — это контракт с S3, и
+// расширять её случайным добавлением файла нельзя. Каждое имя здесь — обещание потребителю.
+//
+// Первая редакция среза этого блока не имела вовсе: модули лежали в `src/actor/`, тесты их
+// импортировали напрямую, всё было зелёное — и `@trdlabs/engine` при этом не отдавал наружу ни
+// одного из них. S3 не смог бы потребить результат S2. Ревью поймало это на СОБРАННОМ пакете; мой
+// clean-consumer гейт не поймал, потому что проверял только старый `simulate()` — гейт был уже
+// того, что объявлял.
+
+export {
+  assertContiguous,
+  nextSeq,
+  orderFrontier,
+  phasePriority,
+  type FrontierEvent,
+  type Phase,
+  type SequencedEvent,
+} from './actor/scheduler.js';
+
+export {
+  CascadeBudgetBreach,
+  applyBatch,
+  type Applied,
+  type BatchCore,
+  type BatchOutcome,
+  type CascadeBudget,
+  type CascadeCounter,
+  type OutboxEvent,
+  type Validation,
+} from './actor/batch.js';
+
+export {
+  cancelTimer,
+  openFrontierTimers,
+  scheduleTimer,
+  type FrontierTimers,
+  type ScheduledTimer,
+  type TimerFired,
+} from './actor/timers.js';
+
+export {
+  EMPTY_LEDGER,
+  applyFill,
+  applyFunding,
+  fillsCausedBy,
+  positionView,
+  type Fill,
+  type FillSide,
+  type FundingSettlement as LedgerFundingSettlement,
+  type Ledger,
+  type PositionView,
+} from './actor/ledger.js';
+
+export {
+  cancelRejected,
+  checkCommandCount,
+  checkDispatchDuration,
+  isTerminal,
+  transition,
+  type BudgetVerdict,
+  type CancelRejected,
+  type DispatchBudget,
+  type OrderEvent,
+  type OrderState,
+  type Transition,
+} from './actor/order-fsm.js';
+
+export {
+  isEligibleForBar,
+  matchBar,
+  type Bar as SimBar,
+  type Match,
+  type OrderKind,
+  type RestingOrder,
+  type Side,
+} from './actor/sim-exchange.js';
+
+export {
+  createCheckpointableRng,
+  isRngState,
+  rngStateFromSeed,
+  type CheckpointableRng,
+  type RngState,
+} from './actor/rng.js';
+
+export {
+  AUTHOR_STATE_MAX_BYTES,
+  AUTHOR_STATE_MAX_DEPTH,
+  AUTHOR_STATE_UPDATE_RULE,
+  replaceAuthorState,
+  restore,
+  validateAuthorState,
+  type Checkpoint,
+  type CheckpointIdentity,
+  type EngineState,
+  type ProjectionRecoveryState,
+  type RestoreOutcome,
+  type SlotViolation,
+} from './actor/checkpoint.js';
+
+// Гейт границы frontier. Единственная дверь к записи чекпойнта — свободного кодировщика в
+// поверхности пакета НЕТ намеренно (решение владельца S2-D1, п. 2).
+export {
+  CheckpointBoundaryViolation,
+  createCheckpointGate,
+  type CheckpointGate,
+  type FrontierPhase,
+} from './actor/checkpoint-gate.js';
+
+export {
+  TRACE_FORMAT_MS,
+  TRACE_FORMAT_US,
+  traceToMicroseconds,
+  traceToMillisProjection,
+} from './trace/to-microseconds.js';

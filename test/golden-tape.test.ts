@@ -161,7 +161,7 @@ describe('trace shape', () => {
     const trace = simulate(request(0, 0));
     expect(trace.engineVersion).toBeDefined();
     expect(trace.inputs.realityModelRef).toEqual({ id: 'standard_no_funding', version: '1' });
-    expect(trace.traceFormatVersion).toBe('1');
+    expect(trace.traceFormatVersion).toBe('2');
   });
 
   it('marks a forced end-of-data close as synthetic', () => {
