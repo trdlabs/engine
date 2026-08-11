@@ -46,6 +46,8 @@ pnpm test                 # full suite
 node scripts/determinism-gate.mjs   # static: no wall clock / randomness / host entropy / unsorted iteration in src/
 pnpm gate:tapes           # tape provenance + content-ref drift
 pnpm verify:package       # clean consumer: the tarball installs and the actor API works through it
+pnpm release:preflight    # manifest + registry: is this version free, has the tree drifted from it
+pnpm verify:published     # the artifact the REGISTRY serves, installed as a consumer installs it
 ```
 
 The determinism guarantee has two halves and needs both: the static gate catches a `Date.now()` on
@@ -55,6 +57,21 @@ a branch no fixture reaches; the golden-tape test catches an ordering bug no reg
 **shipped surface**: the S2 modules lived in `src/actor/`, the tests imported them directly, every
 gate was green — and the built package exported none of them. It now also checks the checkpoint
 boundary below *by behaviour*, and checks that the free encoder has **not** come back.
+
+`verify:published` is the fourth, and it exists because `verify:package` proves that *this tree*
+packages correctly and says nothing about what the **registry** serves. That gap cost a slice:
+published `0.3.0` pinned `@trdlabs/sdk@0.13.0` and carried no actor surface, while `main` under the
+same number pinned `0.14.0` and did — so a consumer on the canonical channel got neither. It installs
+what a consumer installs and asks four questions: the version is present, the contract is pinned
+*exactly*, the actor surface is callable from the tarball, and there is exactly **one** copy of the
+contract in the consumer tree. The last one is not hygiene: the branded µs types are nominal, so two
+copies are two different types, and that surfaces in the consumer's build rather than here.
+
+`release:preflight` asks the registry too. It has two modes on purpose: by default it fails on
+**drift** (this version is already published *and* the tree's dependencies have moved away from it),
+and only with `--release` does it require a free version number and say "publishable". Requiring a
+free number on every PR would paint the gate red on every unrelated change right after a release —
+which teaches everyone to ignore it.
 
 ## Checkpointing: only on a completed frontier boundary
 

@@ -137,6 +137,18 @@ jobs:
           echo "npm is immutable, so this version cannot be fixed in place — cut the next patch."
           exit 1
 
+      - name: Verify the PUBLISHED artifact from the registry
+        # `verify:package` proves this TREE packages correctly; it says nothing about what the
+        # registry now serves. The gap between those two claims already cost a slice: published
+        # 0.3.0 pinned @trdlabs/sdk@0.13.0 and carried no actor surface while main under the same
+        # number pinned 0.14.0 and did. Every in-repo gate was green — none of them could see it.
+        #
+        # This step installs what a consumer installs and asks four questions: version present,
+        # contract pinned exactly, actor surface callable from the tarball, and exactly ONE copy of
+        # the contract in the consumer tree (the branded µs types are nominal — two copies are two
+        # different types, and that surfaces in the consumer's build, not here).
+        run: pnpm verify:published --version "${VERSION}"
+
       - name: Tag the release (secondary release note)
         run: |
           git tag "v${VERSION}"

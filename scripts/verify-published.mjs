@@ -1,0 +1,198 @@
+#!/usr/bin/env node
+// Проверка ОПУБЛИКОВАННОГО артефакта — из реестра, а не из дерева.
+//
+// ЗАЧЕМ ОТДЕЛЬНО ОТ `verify:package`. Тот собирает тарболл ЗДЕСЬ и ставит его в чистого
+// потребителя: он доказывает, что дерево упаковывается правильно. Он ничего не говорит о том, что
+// в реестре лежит именно этот тарболл. Разрыв между этими двумя утверждениями уже стоил среза:
+// `0.3.0` в npm пинил `@trdlabs/sdk@0.13.0` и не нёс актор-поверхности, тогда как `main` под тем же
+// номером пинил `0.14.0` и нёс. Все внутренние гейты были зелёные — они и не могли это увидеть,
+// потому что ни один не спрашивал реестр.
+//
+// Поэтому здесь ставится ровно то, что получит потребитель: `npm i @trdlabs/engine@<version>` в
+// пустом каталоге, без ссылок на этот репозиторий.
+//
+// ЧЕТЫРЕ ВОПРОСА, каждый — отдельный отказ:
+//   1. версия вообще доступна в реестре;
+//   2. она пинит РОВНО ту версию контракта, что заявлена;
+//   3. актор-поверхность работает из установленного тарболла (имя есть И вызов проходит);
+//   4. в дереве потребителя ОДНА копия `@trdlabs/sdk`.
+//
+// Четвёртый — не гигиена. Брендированные µs-типы номинальны: их идентичность есть место
+// объявления. Две копии пакета дают два РАЗНЫХ типа, которые перестают присваиваться друг другу, и
+// обнаруживается это у потребителя на сборке, а не здесь.
+//
+// Запуск: node scripts/verify-published.mjs [--version 0.4.0]
+
+import { mkdtempSync, rmSync, writeFileSync, readFileSync, readdirSync, statSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
+
+const pkg = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'));
+const argIndex = process.argv.indexOf('--version');
+const VERSION = argIndex === -1 ? pkg.version : process.argv[argIndex + 1];
+const NAME = pkg.name;
+const SDK = '@trdlabs/sdk';
+const EXPECTED_SDK = pkg.dependencies?.[SDK];
+
+const problems = [];
+const run = (cmd, args, cwd) => spawnSync(cmd, args, { cwd, encoding: 'utf8' });
+
+console.log(`verify-published: ${NAME}@${VERSION} (ожидаемый пин ${SDK}@${EXPECTED_SDK})`);
+
+// ── 1. Версия доступна в реестре ─────────────────────────────────────────────
+const viewVersion = run('npm', ['view', `${NAME}@${VERSION}`, 'version']);
+if (viewVersion.status !== 0 || viewVersion.stdout.trim() !== VERSION) {
+  console.error(`verify-published: BLOCKED — ${NAME}@${VERSION} не найден в реестре`);
+  console.error(`  ${(viewVersion.stderr || '').trim() || 'npm view вернул ' + viewVersion.stdout.trim()}`);
+  process.exit(1);
+}
+console.log(`  ✓ версия ${VERSION} доступна в реестре`);
+
+// ── 2. Пин контракта — РОВНО заявленный ──────────────────────────────────────
+const viewDeps = run('npm', ['view', `${NAME}@${VERSION}`, 'dependencies', '--json']);
+if (viewDeps.status !== 0) {
+  problems.push(`не удалось прочитать зависимости опубликованного ${VERSION}: ${(viewDeps.stderr || '').trim()}`);
+} else {
+  const deps = JSON.parse(viewDeps.stdout || '{}');
+  if (deps[SDK] !== EXPECTED_SDK) {
+    problems.push(
+      `опубликованный ${VERSION} пинит ${SDK}@${deps[SDK] ?? '(нет)'}, а дерево заявляет ${EXPECTED_SDK} — ` +
+        'потребитель получит НЕ то, что здесь',
+    );
+  } else {
+    console.log(`  ✓ пин контракта ровно ${SDK}@${deps[SDK]}`);
+  }
+}
+
+// ── 3 и 4. Установка в пустого потребителя ───────────────────────────────────
+//
+// Ставится И движок, И контракт — ровно так делает backtester. Одна из двух копий появилась бы
+// именно здесь, а не при установке движка в одиночку.
+const work = mkdtempSync(join(tmpdir(), 'engine-published-'));
+try {
+  writeFileSync(
+    join(work, 'package.json'),
+    JSON.stringify({ name: 'published-consumer', private: true, type: 'module', version: '1.0.0' }, null, 2),
+  );
+  const install = run('npm', ['install', '--no-audit', '--no-fund', `${NAME}@${VERSION}`, `${SDK}@${EXPECTED_SDK}`], work);
+  if (install.status !== 0) {
+    console.error('verify-published: BLOCKED — установка из реестра не прошла');
+    console.error((install.stderr || install.stdout || '').trim().slice(-2000));
+    process.exit(1);
+  }
+  console.log('  ✓ установка из реестра прошла');
+
+  // 3. Актор-поверхность: имя ЕСТЬ и вызов ПРОХОДИТ. Экспорт, падающий при первом вызове, — та же
+  //    сломанная поставка, что и отсутствующий.
+  const smoke = `
+    import * as engine from '${NAME}';
+    const required = [
+      'orderFrontier', 'nextSeq', 'assertContiguous', 'applyBatch',
+      'openFrontierTimers', 'scheduleTimer', 'cancelTimer',
+      'applyFill', 'applyFunding', 'positionView', 'fillsCausedBy', 'EMPTY_LEDGER',
+      'transition', 'cancelRejected', 'isTerminal', 'checkCommandCount', 'checkDispatchDuration',
+      'matchBar', 'isEligibleForBar',
+      'createCheckpointableRng', 'rngStateFromSeed', 'isRngState',
+      'restore', 'replaceAuthorState', 'validateAuthorState',
+      'createCheckpointGate', 'CheckpointBoundaryViolation',
+      'traceToMicroseconds', 'traceToMillisProjection',
+    ];
+    const missing = required.filter((n) => engine[n] === undefined);
+    if (missing.length > 0) throw new Error('actor API отсутствует в опубликованном пакете: ' + missing.join(', '));
+    if (engine.encodeCheckpoint !== undefined) {
+      throw new Error('в опубликованном пакете снова есть свободный encodeCheckpoint — граница чекпойнта обходима');
+    }
+
+    const ordered = engine.orderFrontier(
+      [{ businessTsUs: 1, phase: 'execution', stableSubscriptionId: 's', sourceSequence: 0, payload: 1 }], 7);
+    if (ordered[0].seq !== 7) throw new Error('orderFrontier не принял startSeq через опубликованный путь');
+
+    const gate = engine.createCheckpointGate();
+    const cp = {
+      identity: { bundleDigest: 'd', contractVersion: 'c', engineVersion: 'e', projectionVersion: 'p' },
+      authorState: {},
+      engineState: { rng: engine.rngStateFromSeed(1), timers: [], orders: [], ledger: engine.EMPTY_LEDGER, lastCommittedSeq: -1 },
+      projectionRecoveryState: { boundedHistory: [], indicatorAccumulators: {} },
+    };
+    if (typeof gate.takeCheckpoint(cp) !== 'string') throw new Error('гейт не отдал чекпойнт на границе');
+    gate.openFrontier(1);
+    let refused = false;
+    try { gate.takeCheckpoint(cp); } catch (e) { refused = e instanceof engine.CheckpointBoundaryViolation; }
+    if (!refused) throw new Error('опубликованный гейт ПРОПУСТИЛ чекпойнт внутри открытого frontier');
+    gate.closeFrontier();
+
+    if (engine.TRACE_FORMAT_VERSION !== '2') {
+      throw new Error('опубликованный TRACE_FORMAT_VERSION = ' + engine.TRACE_FORMAT_VERSION + ', ожидалось 2');
+    }
+    console.log('  ✓ актор-поверхность работает из опубликованного тарболла (' + required.length + ' экспортов)');
+    console.log('  ✓ canonical trace format = ' + engine.TRACE_FORMAT_VERSION);
+  `;
+  writeFileSync(join(work, 'smoke.mjs'), smoke);
+  const smokeRun = run('node', ['smoke.mjs'], work);
+  process.stdout.write(smokeRun.stdout);
+  if (smokeRun.status !== 0) {
+    problems.push(`смоук опубликованного пакета упал: ${(smokeRun.stderr || '').trim().split('\n')[0]}`);
+  }
+
+  // 4. Ровно одна физическая копия контракта в дереве потребителя.
+  const copies = [];
+  const walk = (dir, depth) => {
+    if (depth > 8) return;
+    let entries;
+    try {
+      entries = readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (!e.isDirectory()) continue;
+      const full = join(dir, e.name);
+      if (e.name === 'node_modules') {
+        const candidate = join(full, '@trdlabs', 'sdk', 'package.json');
+        try {
+          if (statSync(candidate).isFile()) {
+            copies.push({ path: candidate, version: JSON.parse(readFileSync(candidate, 'utf8')).version });
+          }
+        } catch {
+          /* нет копии на этом уровне */
+        }
+        walk(full, depth + 1);
+      } else {
+        walk(full, depth + 1);
+      }
+    }
+  };
+  walk(work, 0);
+
+  if (copies.length !== 1) {
+    problems.push(
+      `в дереве потребителя ${copies.length} копий ${SDK} — брендированные µs-типы номинальны, ` +
+        'две копии это два разных типа:\n      ' +
+        copies.map((c) => `${c.version} @ ${c.path.replace(work, '<consumer>')}`).join('\n      '),
+    );
+  } else if (copies[0].version !== EXPECTED_SDK) {
+    problems.push(`единственная копия ${SDK} имеет версию ${copies[0].version}, ожидалась ${EXPECTED_SDK}`);
+  } else {
+    console.log(`  ✓ одна копия ${SDK}@${copies[0].version} в дереве потребителя`);
+  }
+} finally {
+  rmSync(work, { recursive: true, force: true });
+}
+
+// ── 5. Провенанс приложен ────────────────────────────────────────────────────
+const att = run('curl', ['-sf', `https://registry.npmjs.org/-/npm/v1/attestations/${NAME}@${VERSION}`]);
+if (att.status !== 0 || !att.stdout.includes('slsa.dev/provenance')) {
+  problems.push(`у ${NAME}@${VERSION} нет аттестации провенанса в реестре`);
+} else {
+  console.log('  ✓ провенанс приложен');
+}
+
+if (problems.length > 0) {
+  console.error('\nverify-published: BLOCKED\n');
+  for (const p of problems) console.error(`  - ${p}`);
+  process.exit(1);
+}
+
+console.log(`\nverify-published: ${NAME}@${VERSION} — опубликованный артефакт проверен независимо от дерева`);
