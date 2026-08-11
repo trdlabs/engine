@@ -78,17 +78,16 @@ jobs:
             }
           '
 
-      - name: Release preflight (public, semver, licence, provenance)
-        run: pnpm release:preflight
-
-      - name: Refuse to publish a version that already exists
-        # npm is immutable per version; a second publish of the same number is an error, not an
-        # overwrite. Failing here keeps the error legible instead of a registry 403.
-        run: |
-          if npm view "@trdlabs/engine@${VERSION}" version >/dev/null 2>&1; then
-            echo "@trdlabs/engine@${VERSION} is already published — pick a new version"
-            exit 1
-          fi
+      - name: Release preflight (public, semver, licence, provenance, registry)
+        # `--release` is the strict half: the version must be FREE and must move `latest` forward.
+        #
+        # The «refuse to publish an existing version» step that stood here as inline `npm view` is
+        # gone — not because the check was wrong, but because it lived only in this YAML. The
+        # script, which is what anyone runs locally and what CI runs on every PR, never asked the
+        # registry at all and cheerfully printed «0.3.0 is publishable» while 0.3.0 was published
+        # and immutable. Two implementations of one rule always drift toward the weaker one; this
+        # is now a single implementation with two modes.
+        run: pnpm release:preflight --release
 
       # ── The gates that make the artifact trustworthy ────────────────────────
       # The whole value of this package is that it is deterministic and anchored. Publishing a

@@ -1,7 +1,7 @@
 {
   "name": "@trdlabs/engine",
-  "version": "0.3.0",
-  "description": "One deterministic execution core (decision \u2192 risk \u2192 pending order \u2192 fill \u2192 portfolio \u2192 canonical trace) shared by backtester and platform.",
+  "version": "0.4.0",
+  "description": "One deterministic execution core (decision → risk → pending order → fill → portfolio → canonical trace) shared by backtester and platform.",
   "license": "Apache-2.0",
   "repository": {
     "type": "git",
