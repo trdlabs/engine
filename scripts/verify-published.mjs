@@ -42,13 +42,34 @@ const run = (cmd, args, cwd) => spawnSync(cmd, args, { cwd, encoding: 'utf8' });
 console.log(`verify-published: ${NAME}@${VERSION} (ожидаемый пин ${SDK}@${EXPECTED_SDK})`);
 
 // ── 1. Версия доступна в реестре ─────────────────────────────────────────────
-const viewVersion = run('npm', ['view', `${NAME}@${VERSION}`, 'version']);
-if (viewVersion.status !== 0 || viewVersion.stdout.trim() !== VERSION) {
-  console.error(`verify-published: BLOCKED — ${NAME}@${VERSION} не найден в реестре`);
-  console.error(`  ${(viewVersion.stderr || '').trim() || 'npm view вернул ' + viewVersion.stdout.trim()}`);
-  process.exit(1);
+//
+// С ОГРАНИЧЕННЫМ RETRY, и это не перестраховка. Первая редакция спрашивала реестр один раз и
+// уронила релиз 0.5.0: пакет был опубликован, провенанс приложен, а `npm view` ещё отдавал 404 —
+// чтение packument'а отстаёт от записи. Соседний шаг workflow ровно поэтому давно ходит с retry,
+// и я на это сослался, решив, что к моему шагу реестр «успевает устояться». Вывод неверен:
+// провенанс и packument — разные сервисы, и согласованность одного ничего не говорит о другом.
+//
+// Отсутствие ответа при этом НЕ становится успехом: исчерпав попытки, шаг падает.
+const RETRIES = 20;
+const WAIT_MS = 15_000;
+let seen = false;
+for (let attempt = 1; attempt <= RETRIES; attempt += 1) {
+  const viewVersion = run('npm', ['view', `${NAME}@${VERSION}`, 'version']);
+  if (viewVersion.status === 0 && viewVersion.stdout.trim() === VERSION) {
+    seen = true;
+    console.log(
+      `  ✓ версия ${VERSION} доступна в реестре` + (attempt > 1 ? ` (с попытки ${attempt})` : ''),
+    );
+    break;
+  }
+  if (attempt === RETRIES) {
+    console.error(`verify-published: BLOCKED — ${NAME}@${VERSION} не найден в реестре за ${RETRIES} попыток`);
+    console.error(`  ${(viewVersion.stderr || '').trim() || 'npm view вернул ' + viewVersion.stdout.trim()}`);
+    break;
+  }
+  run('node', ['-e', `setTimeout(()=>{}, ${WAIT_MS})`]);
 }
-console.log(`  ✓ версия ${VERSION} доступна в реестре`);
+if (!seen) process.exit(1);
 
 // ── 2. Пин контракта — РОВНО заявленный ──────────────────────────────────────
 const viewDeps = run('npm', ['view', `${NAME}@${VERSION}`, 'dependencies', '--json']);

@@ -101,9 +101,20 @@ original error propagates untouched, and the next checkpoint is allowed. Without
 would leave the gate open and lock checkpointing for the rest of the process: a failure in the other
 direction, and just as silent as the one the gate exists to prevent.
 
-The body must be **synchronous**. A thenable is rejected loudly rather than awaited: an async body
-would "complete" the frontier with work still in flight — the gate returns to the boundary while
-engine state keeps changing, and determinism is lost quietly.
+There are two forms of body, and the line between them is drawn deliberately. `runFrontier` is
+synchronous, and a thenable returned from it is rejected loudly rather than awaited: it would
+"complete" the frontier with work still in flight — the gate returns to the boundary while engine
+state keeps changing, and determinism is lost quietly.
+
+`runFrontierAsync` **awaits** the body and closes after it. That is not a relaxation: the phase stays
+`in-frontier` for the whole execution, so a checkpoint is refused after an `await`, not just before
+the first one. It exists because a host's bar loop is asynchronous by nature — the strategy runs
+across a sandbox boundary, so calling its hook is an `await`.
+
+Opening is synchronous in both forms. If `runFrontierAsync` were an `async` function end to end, a
+nested-frontier violation would arrive as a *rejected promise* rather than a throw at the call site —
+and a caller who forgot the `await` (exactly the caller this check is for) would get an unhandled
+rejection instead of an immediate error.
 
 The reason it is a gate and not a validation: a checkpoint taken mid-frontier is correct **in form**
 and wrong **in moment**. The §3.6 tree has no slot for the frozen eligible timer set of an open

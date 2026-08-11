@@ -181,6 +181,84 @@ describe('4. бросок тела сохраняется как исходны�
   });
 });
 
+describe('асинхронная форма: те же пять свойств', () => {
+  // Барный цикл бэктестера асинхронен по существу — стратегия исполняется за границей песочницы.
+  // Синхронной формы на него не надеть, поэтому асинхронная обязана держать ровно то же, а не
+  // «примерно то же».
+
+  it('фаза остаётся in-frontier ПОСЛЕ await, а не до первого', () => {
+    // Главное отличие от наивной реализации без `await` в теле обёртки: та закрыла бы frontier на
+    // возврате промиса, и всё, что после первого await, шло бы уже «на границе».
+    const host = createActorHost();
+    return host
+      .runFrontierAsync(T, async () => {
+        await Promise.resolve();
+        await Promise.resolve();
+        return host.phase;
+      })
+      .then((phaseAfterAwaits) => {
+        expect(phaseAfterAwaits).toBe('in-frontier');
+        expect(host.phase).toBe('boundary');
+      });
+  });
+
+  it('чекпойнт запрещён и ПОСЛЕ await внутри тела', async () => {
+    const host = createActorHost();
+    await expect(
+      host.runFrontierAsync(T, async () => {
+        await Promise.resolve();
+        return host.takeCheckpoint(checkpoint());
+      }),
+    ).rejects.toBeInstanceOf(CheckpointBoundaryViolation);
+  });
+
+  it('отказ тела закрывает frontier и пробрасывается исходным', async () => {
+    const original = new Error('async boom');
+    const host = createActorHost();
+    await expect(
+      host.runFrontierAsync(T, async () => {
+        await Promise.resolve();
+        throw original;
+      }),
+    ).rejects.toBe(original);
+    expect(host.phase).toBe('boundary');
+    expect(typeof host.takeCheckpoint(checkpoint())).toBe('string');
+  });
+
+  it('второй frontier БЕЗ await первого отвергается как вложенный', async () => {
+    // Асинхронность не разрешает два frontier одновременно. Проверка живёт в гейте, поэтому
+    // работает одинаково для обеих форм.
+    const host = createActorHost();
+    const first = host.runFrontierAsync(T, async () => {
+      await Promise.resolve();
+      return 1;
+    });
+    expect(() => host.runFrontierAsync(T, async () => 2)).toThrow(CheckpointBoundaryViolation);
+    await first;
+    expect(host.phase).toBe('boundary');
+  });
+
+  it('СИНХРОННЫЙ бросок из тела тоже закрывает frontier', async () => {
+    // Тело может упасть до первого await — например, на построении контекста. Такой бросок обязан
+    // вести себя как любой другой: frontier закрыт, причина сохранена.
+    const original = new Error('упало до первого await');
+    const host = createActorHost();
+    await expect(
+      host.runFrontierAsync(T, () => {
+        throw original;
+      }),
+    ).rejects.toBe(original);
+    expect(host.phase).toBe('boundary');
+  });
+
+  it('последовательные асинхронные frontier проходят нормально', async () => {
+    const host = createActorHost();
+    expect(await host.runFrontierAsync(T, async () => 'a')).toBe('a');
+    expect(await host.runFrontierAsync(timestampUs(Number(T) + 60_000_000), async () => 'b')).toBe('b');
+    expect(host.phase).toBe('boundary');
+  });
+});
+
 describe('5. после броска фаза снова boundary и чекпойнт снова разрешён', () => {
   it('чекпойнт проходит сразу после упавшего frontier', () => {
     const host = createActorHost();
