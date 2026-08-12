@@ -15,7 +15,7 @@
 // `synthetic: 'end_of_data'` so metrics and reconciliation can exclude it.
 
 
-import { add, addF64, addSub, diffTimesF64, mul, subAll, sub, weightedPrice } from './money.js';
+import { add, addF64, addSub, grossOnClose, mul, subAll, sub, weightedPrice } from './money.js';
 
 import type { CloseReason, Trade } from '../trace/artifacts.js';
 
@@ -329,10 +329,8 @@ export class Portfolio {
     exitPrice: number,
     size: number,
   ): number {
-    // E3: две операции во float64. Результат либо уходит в артефакт (где квантуется до 8 знаков в
-    // любом случае), либо один раз входит в кассу при закрытии сделки — цепочки нет.
-    return side === 'long'
-      ? diffTimesF64(exitPrice, entryPrice, size)
-      : diffTimesF64(entryPrice, exitPrice, size);
+    // Выражение переехало в `money.ts` (`grossOnClose`), когда у него появился второй владелец —
+    // деривация сделок актора. Значение не двигается: та же цепочка, тот же float64.
+    return grossOnClose(side, entryPrice, exitPrice, size);
   }
 }

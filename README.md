@@ -5,14 +5,22 @@ trace — shared by `trdlabs/backtester` and `trdlabs/platform`, so that a bundl
 profile + reality model) behaves identically in backtest, replay, paper and live, modulo *declared*
 reality models.
 
-**Status: 083 S2 merged (2026-08-11).** The repository is public and the package is published —
-`@trdlabs/engine` on npm with provenance, `0.3.0` at the time of writing. The Ф2 bootstrap line that
-stood here ("private and unpublished") was true until 2026-07-26 and stale afterwards.
+**Status: 083 S2 merged (2026-08-11); S3 trade derivation added (2026-08-12).** The repository is
+public and the package is published — `@trdlabs/engine` on npm with provenance. The registry is the
+source of truth for which version is current; a number written here would be a claim nothing
+verifies, and it was already stale once. The Ф2 bootstrap line that stood here ("private and
+unpublished") was true until 2026-07-26 and stale afterwards.
 
 What exists now, on top of the Ф2/Ф3 execution core: the **actor core** of contract 083 S2 —
 a total frontier order with a continuous actor-local `seq`, batch semantics §3.8.3–3.8.4, the order
 FSM, the execution ledger, advance-time timers, the sim-exchange, a checkpointable RNG and the §3.6
 checkpoint format with engine-level recovery-equivalence.
+
+On top of that, **trade derivation** (`deriveActorTrades`): an actor's closed trades are folded here,
+from a single ordered accounting journal (`fill | funding`), not assembled by the host. The host
+supplies only what nothing else knows — the close *reason*, keyed by the closing fill's id. Two
+accountings then have to agree: `reconcileRealizedPnl` states the exact identity between the derived
+trades and `Ledger.realizedPnl`, so an error in either is visible instead of plausible.
 
 ## Where the rules live
 
