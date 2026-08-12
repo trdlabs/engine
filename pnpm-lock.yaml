@@ -9,8 +9,8 @@ importers:
   .:
     dependencies:
       '@trdlabs/sdk':
-        specifier: 0.15.0
-        version: 0.15.0
+        specifier: 0.16.0
+        version: 0.16.0
       decimal.js:
         specifier: 10.4.3
         version: 10.4.3
@@ -465,8 +465,8 @@ packages:
     cpu: [x64]
     os: [win32]
 
-  '@trdlabs/sdk@0.15.0':
-    resolution: {integrity: sha512-EQLn4bDPPSSxamwYfNkHE56MUpB+ryB8+9o0IR7F73s5iacDpo84Og3TcexrFnVJMulutOZh3CJBT3AT1nK2xA==}
+  '@trdlabs/sdk@0.16.0':
+    resolution: {integrity: sha512-677HRZah1TYDGWbHyNlRr+LgrHNadfVoKcwz/TJXF+GQrgMqhk/2R3VnYVbatMHiGJlg65uTHQWpv68SW9of7g==}
 
   '@types/estree@1.0.9':
     resolution: {integrity: sha512-GhdPgy1el4/ImP05X05Uw4cw2/M93BCUmnEvWZNStlCzEKME4Fkk+YpoA5OiHNQmoS7Cafb8Xa3Pya8m1Qrzeg==}
@@ -948,7 +948,7 @@ snapshots:
   '@rollup/rollup-win32-x64-msvc@4.62.2':
     optional: true
 
-  '@trdlabs/sdk@0.15.0':
+  '@trdlabs/sdk@0.16.0':
     dependencies:
       ajv: 8.20.0
       decimal.js: 10.6.0
