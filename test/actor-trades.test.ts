@@ -228,12 +228,10 @@ describe('причинность и отказы', () => {
   it('внутри ОДНОЙ эры closeSeq растёт', () => {
     // Проверка проверки к предыдущему: без неё «всегда ноль» тоже зеленело бы.
     const journal = [buy('f1', 3, 100, 3, 0), sell('f2', 1, 110, 1, 1), sell('f3', 2, 120, 2, 2)];
-    const { trades } = deriveActorTrades(journal, {
-      closes: [
-        { exitFillId: 'f2', closeReason: 'strategy_exit', closeFraction: 1 / 3 },
-        { exitFillId: 'f3', closeReason: 'strategy_exit' },
-      ],
-    });
+    // Первый выход идёт БЕЗ доли: `mul(3, 1/3)` даёт 0.9999999999999999, а не 1, поэтому пара
+    // «3 и 1» с долей 1/3 противоречива и отвергается. Частичное исполнение без запрошенной доли —
+    // законный путь, и здесь проверяется счётчик, а не апорционирование.
+    const { trades } = deriveActorTrades(journal, { closes: closes('f2', 'f3') });
     expect(trades.map((t) => [t.era, t.closeSeq])).toEqual([
       [0, 0],
       [0, 1],
@@ -254,26 +252,32 @@ describe('closeFraction: апорционирование по ЗАПРОШЕН�
   // Восстановление доли из `closed / size` даёт ту же величину математически и другую побитово:
   // это ещё один выход во float64. Legacy умножает на запрошенную долю, поэтому одна и та же
   // лестница выходов дала бы у двух lifecycle разные комиссии при верном суммарном PnL.
-  // Треть выбрана не для красоты: 1/3 во float64 — 0.3333333333333333, поэтому `3 × (1/3)` даёт
-  // 0.9999999999999999, тогда как `3 × 1 / 3` — ровно 1. Это РАЗНЫЕ double, и на `fundingPaid`
-  // разница видна прямо; в `feePaid` того же сценария она тонет в сложении с комиссией выхода —
-  // то есть «одинаково» здесь зависит от того, куда смотреть, и смотреть надо на саму долю.
-  const journal = [buy('f1', 3, 100, 3, 0), funding(3, 1), sell('f2', 1, 110, 1, 2)];
-  const WITH_FRACTION = { exitFillId: 'f2', closeReason: 'strategy_exit' as const, closeFraction: 1 / 3 };
+  // Пара подобрана СОГЛАСОВАННОЙ и при этом расходящейся, и это не мелочь: первая редакция этих
+  // проб брала `size 3, qty 1, fraction 1/3` — то есть ровно ту противоречивую пару, которую
+  // `assertFillMatchesFraction` теперь отвергает (`mul(3, 1/3)` = 0.9999999999999999, не 1). На
+  // ней расхождение путей было АРТЕФАКТОМ дефекта, а не свойством арифметики.
+  //
+  // Здесь `mul(2, 1/6)` = 0.3333333333333333 РОВНО, то есть исполнение согласовано с заявленной
+  // долей; при накоплении 3 запрошенный путь даёт 0.5, а восстановленный — 0.49999999999999994.
+  // Развёртка по 24 416 согласованным парам даёт 3366 таких расхождений: свойство арифметики,
+  // а не подобранный случай.
+  const SIXTH = 1 / 6;
+  const journal = [buy('f1', 2, 100, 3, 0), funding(3, 1), sell('f2', 0.3333333333333333, 110, 1, 2)];
+  const WITH_FRACTION = { exitFillId: 'f2', closeReason: 'strategy_exit' as const, closeFraction: SIXTH };
 
   it('с долей считается ТЕМ ЖЕ выражением, что legacy: mul(accrued, fraction)', () => {
     // Сверка с самим выражением legacy, а не с переписанным числом: parity заявлена как «то же
     // выражение», и проверять её надо ровно им.
     const withFraction = deriveActorTrades(journal, { closes: [WITH_FRACTION] });
-    expect(withFraction.trades[0]!.fundingPaid).toBe(mul(3, 1 / 3));
-    expect(withFraction.trades[0]!.feePaid).toBe(add(mul(3, 1 / 3), 1));
+    expect(withFraction.trades[0]!.fundingPaid).toBe(mul(3, SIXTH));
+    expect(withFraction.trades[0]!.feePaid).toBe(add(mul(3, SIXTH), 1));
   });
 
   it('и это НЕ то же самое, что отношение — иначе поправка была бы пустой', () => {
     const withFraction = deriveActorTrades(journal, { closes: [WITH_FRACTION] });
     const withoutFraction = deriveActorTrades(journal, { closes: closes('f2') });
-    expect(withFraction.trades[0]!.fundingPaid).toBe(0.9999999999999999);
-    expect(withoutFraction.trades[0]!.fundingPaid).toBe(1);
+    expect(withFraction.trades[0]!.fundingPaid).toBe(0.5);
+    expect(withoutFraction.trades[0]!.fundingPaid).toBe(0.49999999999999994);
   });
 
   it('без доли — по фактическому отношению; путь для частичного исполнения биржей', () => {
@@ -299,6 +303,37 @@ describe('closeFraction: апорционирование по ЗАПРОШЕН�
         closes: [{ exitFillId: 'f2', closeReason: 'strategy_exit', closeFraction: 0.5 }],
       }),
     ).toThrow(/через ноль с флипом/);
+  });
+
+  it('заявленная доля обязана СОВПАДАТЬ с исполненным объёмом', () => {
+    // Эра 4, исполнено 1, заявлено 0.5. Прежде это принималось: сходимость к разбиению
+    // НЕЧУВСТВИТЕЛЬНА — сделка вычитает `entryFeeClosed`, остаток эры ровно на него уменьшается,
+    // и в `Σ − residual` оба члена сокращаются. Числа прогона верны в сумме и неверны в каждой
+    // своей части.
+    const wrong = [buy('f1', 4, 100, 2, 0), sell('f2', 1, 110, 0.5, 1)];
+    expect(() =>
+      deriveActorTrades(wrong, {
+        closes: [{ exitFillId: 'f2', closeReason: 'strategy_exit', closeFraction: 0.5 }],
+      }),
+    ).toThrow(/что даёт 2, а исполнено 1/);
+  });
+
+  it('ПРОВЕРКА ПРОВЕРКИ: согласованная пара проходит', () => {
+    // Без неё проба выше зеленела бы и у проверки, отвергающей любую долю.
+    const right = [buy('f1', 4, 100, 2, 0), sell('f2', 2, 110, 0.5, 1)];
+    expect(() =>
+      deriveActorTrades(right, {
+        closes: [{ exitFillId: 'f2', closeReason: 'strategy_exit', closeFraction: 0.5 }],
+      }),
+    ).not.toThrow();
+  });
+
+  it('сходимость НЕ ловила этот случай — вот доказательство', () => {
+    // Та же противоречивая пара без доли (законный путь частичного исполнения) сходится; с долей
+    // она сходилась бы ТОЖЕ, поэтому тождество здесь бессильно и нужна отдельная проверка.
+    const wrong = [buy('f1', 4, 100, 2, 0), sell('f2', 1, 110, 0.5, 1)];
+    const asPartialFill = deriveActorTrades(wrong, { closes: closes('f2') });
+    expect(reconcileRealizedPnl(asPartialFill)).toBe(foldLedger(wrong).realizedPnl);
   });
 
   it.each([0, 1, -0.5, 1.5, Number.NaN])('доля %s вне (0, 1) отвергается', (bad) => {

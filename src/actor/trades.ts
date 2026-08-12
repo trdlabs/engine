@@ -184,6 +184,42 @@ function assertFraction(fillId: string, fraction: number): void {
 }
 
 /**
+ * Заявленная доля обязана СОВПАДАТЬ с исполненным объёмом — побайтово.
+ *
+ * ЗАЧЕМ ОТДЕЛЬНАЯ ПРОВЕРКА, ЕСЛИ ЕСТЬ ТОЖДЕСТВО СХОДИМОСТИ. Тождество к разбиению
+ * НЕЧУВСТВИТЕЛЬНО, и это видно из его же арифметики: сделка вычитает `entryFeeClosed`, остаток эры
+ * ровно на него уменьшается, и в сумме `Σ − residual` оба члена сокращаются. Пара «эра 4, исполнено
+ * 1, доля 0.5» проходила сходимость зелёной, отнеся к закрытой четверти половину комиссии входа и
+ * половину funding'а. Числа прогона при этом верны в сумме и неверны в каждой своей части — тот
+ * самый вид ошибки, который отчёт показывает правдоподобным.
+ *
+ * Сравнение с `mul(size, fraction)`, а не с `qty / size`: legacy получает размер закрытия ИМЕННО
+ * этим выражением (`Portfolio.closedSizeAt`), и «совпадает» здесь означает «то же число, что
+ * получил бы legacy», а не «примерно та же доля».
+ *
+ * Расхождение законно и означает другое событие: биржа исполнила заявку не целиком. Запрошенной
+ * доли тогда не существует, и аннотация обязана идти БЕЗ `closeFraction` — апорционирование пойдёт
+ * по фактическому отношению.
+ */
+function assertFillMatchesFraction(
+  fillId: string,
+  qty: number,
+  eraSize: number,
+  fraction: number,
+): void {
+  const expected = mul(eraSize, fraction);
+  if (!Object.is(qty, expected)) {
+    throw new RangeError(
+      `deriveActorTrades: у филла ${fillId} заявлена closeFraction ${fraction} от позиции ` +
+        `${eraSize}, что даёт ${expected}, а исполнено ${qty}. Если исполнение фактически ` +
+        'частичное и не равно запрошенной доле, аннотация обязана идти БЕЗ closeFraction: ' +
+        'иначе комиссия входа и funding разойдутся между сделкой и остатком эры, а сходимость ' +
+        'этого не заметит — она к разбиению нечувствительна',
+    );
+  }
+}
+
+/**
  * Свернуть журнал в сделки.
  *
  * Границы эр определяются ТЕМ ЖЕ `netQty`, что и в `applyFill`: точный десятичный ноль, а не
@@ -340,6 +376,7 @@ export function deriveActorTrades(
       }
       if (!full && annotation.closeFraction !== undefined) {
         assertFraction(fill.fillId, annotation.closeFraction);
+        assertFillMatchesFraction(fill.fillId, fill.qty, era.size, annotation.closeFraction);
       }
       closeShare(era, fill, fill.qty, annotation.closeReason, false, annotation.closeFraction);
       if (full) {
