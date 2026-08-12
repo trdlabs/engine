@@ -23,6 +23,7 @@ import {
 } from '../src/index.js';
 import type { AccountingJournal, CloseAnnotation, Fill, Ledger } from '../src/index.js';
 import { timestampUs } from '../src/contract/index.js';
+import { add, mul } from '../src/core/money.js';
 
 const T = (n: number) => timestampUs(1_700_000_000_000_000 + n * 60_000_000);
 
@@ -207,7 +208,10 @@ describe('причинность и отказы', () => {
     expect(derivation.trades[0]!.closeReason).toBe('stop_hit');
   });
 
-  it('closeSeq растёт по прогону, а не по эре', () => {
+  it('closeSeq считается ПО ЭРЕ, а не по прогону', () => {
+    // `Portfolio.settleOpen` обнуляет счётчик на каждом открытии. Глобальный счётчик дал бы второй
+    // сделке `closeSeq: 1`, а от него зависит «богатая» форма идентификатора — то есть переименовал
+    // бы половину сделок прогона, не тронув ни одного числа.
     const journal = [
       buy('f1', 2, 100, 1, 0),
       sell('f2', 2, 110, 1, 1),
@@ -217,8 +221,136 @@ describe('причинность и отказы', () => {
     const { trades } = deriveActorTrades(journal, { closes: closes('f2', 'f4') });
     expect(trades.map((t) => [t.era, t.closeSeq])).toEqual([
       [0, 0],
-      [1, 1],
+      [1, 0],
     ]);
+  });
+
+  it('внутри ОДНОЙ эры closeSeq растёт', () => {
+    // Проверка проверки к предыдущему: без неё «всегда ноль» тоже зеленело бы.
+    const journal = [buy('f1', 3, 100, 3, 0), sell('f2', 1, 110, 1, 1), sell('f3', 2, 120, 2, 2)];
+    const { trades } = deriveActorTrades(journal, {
+      closes: [
+        { exitFillId: 'f2', closeReason: 'strategy_exit', closeFraction: 1 / 3 },
+        { exitFillId: 'f3', closeReason: 'strategy_exit' },
+      ],
+    });
+    expect(trades.map((t) => [t.era, t.closeSeq])).toEqual([
+      [0, 0],
+      [0, 1],
+    ]);
+  });
+
+  it('флип тоже открывает эру и обнуляет счётчик', () => {
+    const journal = [buy('f1', 2, 100, 1, 0), sell('f2', 5, 110, 2, 1), buy('f3', 3, 105, 1, 2)];
+    const { trades } = deriveActorTrades(journal, { closes: closes('f2', 'f3') });
+    expect(trades.map((t) => [t.era, t.closeSeq])).toEqual([
+      [0, 0],
+      [1, 0],
+    ]);
+  });
+});
+
+describe('closeFraction: апорционирование по ЗАПРОШЕННОЙ доле', () => {
+  // Восстановление доли из `closed / size` даёт ту же величину математически и другую побитово:
+  // это ещё один выход во float64. Legacy умножает на запрошенную долю, поэтому одна и та же
+  // лестница выходов дала бы у двух lifecycle разные комиссии при верном суммарном PnL.
+  // Треть выбрана не для красоты: 1/3 во float64 — 0.3333333333333333, поэтому `3 × (1/3)` даёт
+  // 0.9999999999999999, тогда как `3 × 1 / 3` — ровно 1. Это РАЗНЫЕ double, и на `fundingPaid`
+  // разница видна прямо; в `feePaid` того же сценария она тонет в сложении с комиссией выхода —
+  // то есть «одинаково» здесь зависит от того, куда смотреть, и смотреть надо на саму долю.
+  const journal = [buy('f1', 3, 100, 3, 0), funding(3, 1), sell('f2', 1, 110, 1, 2)];
+  const WITH_FRACTION = { exitFillId: 'f2', closeReason: 'strategy_exit' as const, closeFraction: 1 / 3 };
+
+  it('с долей считается ТЕМ ЖЕ выражением, что legacy: mul(accrued, fraction)', () => {
+    // Сверка с самим выражением legacy, а не с переписанным числом: parity заявлена как «то же
+    // выражение», и проверять её надо ровно им.
+    const withFraction = deriveActorTrades(journal, { closes: [WITH_FRACTION] });
+    expect(withFraction.trades[0]!.fundingPaid).toBe(mul(3, 1 / 3));
+    expect(withFraction.trades[0]!.feePaid).toBe(add(mul(3, 1 / 3), 1));
+  });
+
+  it('и это НЕ то же самое, что отношение — иначе поправка была бы пустой', () => {
+    const withFraction = deriveActorTrades(journal, { closes: [WITH_FRACTION] });
+    const withoutFraction = deriveActorTrades(journal, { closes: closes('f2') });
+    expect(withFraction.trades[0]!.fundingPaid).toBe(0.9999999999999999);
+    expect(withoutFraction.trades[0]!.fundingPaid).toBe(1);
+  });
+
+  it('без доли — по фактическому отношению; путь для частичного исполнения биржей', () => {
+    const withoutFraction = deriveActorTrades(journal, { closes: closes('f2') });
+    expect(withoutFraction.trades[0]!.partial).toBe(true);
+    // Сходимость держится в обоих случаях — расходятся только последние разряды разложения.
+    expect(reconcileRealizedPnl(withoutFraction)).toBe(foldLedger(journal).realizedPnl);
+  });
+
+  it('доля у ПОЛНОГО закрытия отвергается', () => {
+    const full = [buy('f1', 2, 100, 1, 0), sell('f2', 2, 110, 1, 1)];
+    expect(() =>
+      deriveActorTrades(full, {
+        closes: [{ exitFillId: 'f2', closeReason: 'strategy_exit', closeFraction: 0.5 }],
+      }),
+    ).toThrow(/закрытие полное, а задана closeFraction/);
+  });
+
+  it('доля у флипа отвергается', () => {
+    const flip = [buy('f1', 2, 100, 1, 0), sell('f2', 5, 110, 2, 1)];
+    expect(() =>
+      deriveActorTrades(flip, {
+        closes: [{ exitFillId: 'f2', closeReason: 'strategy_exit', closeFraction: 0.5 }],
+      }),
+    ).toThrow(/через ноль с флипом/);
+  });
+
+  it.each([0, 1, -0.5, 1.5, Number.NaN])('доля %s вне (0, 1) отвергается', (bad) => {
+    expect(() =>
+      deriveActorTrades(journal, {
+        closes: [{ exitFillId: 'f2', closeReason: 'strategy_exit', closeFraction: bad }],
+      }),
+    ).toThrow(/вне \(0, 1\)/);
+  });
+});
+
+describe('аннотации закрытия — ТОЧНОЕ множество', () => {
+  const journal = [buy('f1', 2, 100, 1, 0), sell('f2', 2, 110, 1, 1)];
+
+  it('дубликат отвергается, а не побеждает последним', () => {
+    // `new Map` молча оставил бы последнюю, и причина отказа зависела бы от порядка в массиве.
+    expect(() =>
+      deriveActorTrades(journal, {
+        closes: [
+          { exitFillId: 'f2', closeReason: 'stop_hit' },
+          { exitFillId: 'f2', closeReason: 'take_hit' },
+        ],
+      }),
+    ).toThrow(/задана дважды/);
+  });
+
+  it('аннотация на филл ВХОДА отвергается', () => {
+    // Самый частый вид опечатки: причина написана, но повешена не на тот филл. При мягком чтении
+    // закрытие падало бы «без причины», и из отказа не было видно, что причина вообще-то есть.
+    expect(() =>
+      deriveActorTrades(journal, {
+        closes: [
+          { exitFillId: 'f2', closeReason: 'strategy_exit' },
+          { exitFillId: 'f1', closeReason: 'stop_hit' },
+        ],
+      }),
+    ).toThrow(/не сработали ни разу: f1/);
+  });
+
+  it('аннотация на филл, которого нет в журнале, отвергается', () => {
+    expect(() =>
+      deriveActorTrades(journal, {
+        closes: [
+          { exitFillId: 'f2', closeReason: 'strategy_exit' },
+          { exitFillId: 'нет-такого', closeReason: 'stop_hit' },
+        ],
+      }),
+    ).toThrow(/не сработали ни разу: нет-такого/);
+  });
+
+  it('ПРОВЕРКА ПРОВЕРКИ: ровно нужный набор проходит', () => {
+    expect(() => deriveActorTrades(journal, { closes: closes('f2') })).not.toThrow();
   });
 });
 
