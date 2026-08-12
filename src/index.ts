@@ -98,6 +98,19 @@ export {
 } from './actor/ledger.js';
 
 export {
+  deriveActorTrades,
+  reconcileRealizedPnl,
+  syntheticExitFillId,
+  type AccountingEntry,
+  type AccountingJournal,
+  type ActorTrade,
+  type ActorTradeDerivation,
+  type CloseAnnotation,
+  type ForcedExit,
+  type OpenEraResidual,
+} from './actor/trades.js';
+
+export {
   cancelRejected,
   checkCommandCount,
   checkDispatchDuration,

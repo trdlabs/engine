@@ -214,6 +214,22 @@ export function diffTimes(a: number, b: number, factor: number): number {
   return new Decimal(a).minus(b).times(factor).toNumber();
 }
 
+/**
+ * Доля величины по закрываемой части: `value × part / whole` ОДНОЙ цепочкой.
+ *
+ * Заведена под апорционирование комиссии входа и накопленного funding по закрываемой доле эры.
+ * Разложение `mul(value, div(part, whole))` дало бы два выхода во float64, причём первым вышла бы
+ * сама доля — величина, точно непредставимая в общем случае (1/3), — и ошибка представления
+ * умножилась бы на нотионал. Правило модуля («одна функция — одно целое выражение») здесь не
+ * стилистическое: цена его нарушения видна в последнем разряде каждой частично закрытой сделки.
+ *
+ * `whole` обязан быть ненулевым: доля от нулевого целого не определена, и вызывающий, у которого
+ * это случилось, ошибся раньше.
+ */
+export function portionOf(value: number, part: number, whole: number): number {
+  return new Decimal(value).times(part).div(whole).toNumber();
+}
+
 // ---------------------------------------------------------------------------
 // FLOAT64 — ОСОЗНАННОЕ ИСКЛЮЧЕНИЕ (E3), А НЕ ЗАБЫТОЕ МЕСТО.
 //
@@ -241,6 +257,27 @@ export function diffTimes(a: number, b: number, factor: number): number {
 /** `(a − b) × factor` во float64 — валовый PnL. См. блок выше: цепочки нет, ошибке негде копиться. */
 export function diffTimesF64(a: number, b: number, factor: number): number {
   return (a - b) * factor;
+}
+
+/**
+ * Валовый PnL закрываемой доли: `(exit − entry) × size` для лонга, зеркально для шорта.
+ *
+ * Живёт здесь, а не приватным методом `Portfolio`, потому что владельцев у выражения стало двое:
+ * `Portfolio.closePosition` (legacy `single_position`) и деривация сделок актора. Две копии
+ * двухстрочного выражения — это ровно тот способ, которым расходятся интерпретаторы, и ровно то,
+ * ради прекращения чего заведён этот пакет.
+ *
+ * Во float64 осознанно — см. блок выше: две операции над входами, цепочки нет.
+ */
+export function grossOnClose(
+  side: 'long' | 'short',
+  entryPrice: number,
+  exitPrice: number,
+  size: number,
+): number {
+  return side === 'long'
+    ? diffTimesF64(exitPrice, entryPrice, size)
+    : diffTimesF64(entryPrice, exitPrice, size);
 }
 
 /** `a + b` во float64 — марк-ту-маркет. См. блок выше: наблюдение, а не переносимое состояние. */
