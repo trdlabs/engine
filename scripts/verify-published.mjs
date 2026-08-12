@@ -29,6 +29,8 @@ import { join } from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
+import { ACTOR_SURFACE, DERIVATION_SMOKE } from './lib/actor-surface.mjs';
+
 const pkg = JSON.parse(readFileSync(fileURLToPath(new URL('../package.json', import.meta.url)), 'utf8'));
 const argIndex = process.argv.indexOf('--version');
 const VERSION = argIndex === -1 ? pkg.version : process.argv[argIndex + 1];
@@ -129,17 +131,7 @@ try {
   //    сломанная поставка, что и отсутствующий.
   const smoke = `
     import * as engine from '${NAME}';
-    const required = [
-      'orderFrontier', 'nextSeq', 'assertContiguous', 'applyBatch',
-      'openFrontierTimers', 'scheduleTimer', 'cancelTimer',
-      'applyFill', 'applyFunding', 'positionView', 'fillsCausedBy', 'EMPTY_LEDGER',
-      'transition', 'cancelRejected', 'isTerminal', 'checkCommandCount', 'checkDispatchDuration',
-      'matchBar', 'isEligibleForBar',
-      'createCheckpointableRng', 'rngStateFromSeed', 'isRngState',
-      'restore', 'replaceAuthorState', 'validateAuthorState',
-      'createActorHost', 'CheckpointBoundaryViolation',
-      'traceToMicroseconds', 'traceToMillisProjection',
-    ];
+    const required = ${JSON.stringify(ACTOR_SURFACE)};
     const missing = required.filter((n) => engine[n] === undefined);
     if (missing.length > 0) throw new Error('actor API отсутствует в опубликованном пакете: ' + missing.join(', '));
     if (engine.encodeCheckpoint !== undefined) {
@@ -205,6 +197,8 @@ try {
     if (asyncOriginal !== asyncBoom) throw new Error('async: исходный отказ тела подменён');
     if (host.phase !== 'boundary') throw new Error('async: после rejection фаза осталась in-frontier');
     if (typeof host.takeCheckpoint(cp) !== 'string') throw new Error('async: после rejection чекпойнт не разрешён');
+
+    ${DERIVATION_SMOKE}
 
     if (engine.TRACE_FORMAT_VERSION !== '2') {
       throw new Error('опубликованный TRACE_FORMAT_VERSION = ' + engine.TRACE_FORMAT_VERSION + ', ожидалось 2');

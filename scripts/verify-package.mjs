@@ -17,6 +17,8 @@ import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { ACTOR_SURFACE, DERIVATION_SMOKE } from './lib/actor-surface.mjs';
+
 const ROOT = resolve(fileURLToPath(new URL('..', import.meta.url)));
 const pkg = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 const problems = [];
@@ -183,18 +185,7 @@ try {
     // одного из них. S3 не смог бы потребить результат S2. Гейт был уже того, что объявлял:
     // он проверял ровно старый simulate() и потому не мог этого увидеть.
     import * as engine from '@trdlabs/engine';
-    const required = [
-      'orderFrontier', 'nextSeq', 'assertContiguous',
-      'applyBatch',
-      'openFrontierTimers', 'scheduleTimer', 'cancelTimer',
-      'applyFill', 'applyFunding', 'positionView', 'fillsCausedBy', 'EMPTY_LEDGER',
-      'transition', 'cancelRejected', 'isTerminal', 'checkCommandCount', 'checkDispatchDuration',
-      'matchBar', 'isEligibleForBar',
-      'createCheckpointableRng', 'rngStateFromSeed', 'isRngState',
-      'restore', 'replaceAuthorState', 'validateAuthorState',
-      'createActorHost', 'CheckpointBoundaryViolation',
-      'traceToMicroseconds', 'traceToMillisProjection',
-    ];
+    const required = ${JSON.stringify(ACTOR_SURFACE)};
     // ДВА ОТСУТСТВИЯ, и оба важнее любого присутствия — вернуть экспорт обратно случайной правкой
     // легче, чем заметить это на ревью.
     //
@@ -290,7 +281,9 @@ try {
       throw new Error('async: после rejection чекпойнт не разрешён');
     }
 
-    console.log('clean consumer: actor API (' + required.length + ' экспортов) + оркестратор frontier (sync и async) OK');
+    ${DERIVATION_SMOKE}
+
+    console.log('clean consumer: actor API (' + required.length + ' экспортов) + оркестратор frontier (sync и async) + деривация сделок OK');
   `;
   writeFileSync(join(project, 'smoke.mjs'), smoke);
   process.stdout.write(run('node', ['smoke.mjs'], project));
