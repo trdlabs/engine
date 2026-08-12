@@ -46,7 +46,7 @@
 // не порождая ни заявки, ни исполнения. Расхождение здесь означало бы, что один и тот же прогон
 // даёт разное число филлов в зависимости от lifecycle.
 
-import { add, grossOnClose, netQty, portionOf, sub, subAll, weightedPrice } from '../core/money.js';
+import { add, grossOnClose, mul, netQty, portionOf, sub, subAll, weightedPrice } from '../core/money.js';
 import type { CloseReason } from '../trace/artifacts.js';
 import type { TimestampUs } from '../contract/index.js';
 import type { Fill, FundingSettlement } from './ledger.js';
@@ -68,6 +68,21 @@ export type AccountingJournal = readonly AccountingEntry[];
 export interface CloseAnnotation {
   readonly exitFillId: string;
   readonly closeReason: CloseReason;
+  /**
+   * Доля позиции, которую хост ЗАПРОСИЛ закрыть. Присутствует ⟺ закрытие частичное.
+   *
+   * Нужна ради побайтовой parity с legacy и восстановлению не поддаётся. `Portfolio.closePosition`
+   * апорционирует по ЗАПРОШЕННОЙ доле (`mul(entryFee, fraction)`), а размер закрытия получает из
+   * неё же (`mul(size, fraction)`). Обратный ход — `closed / size` — даёт ту же величину лишь
+   * математически: это ещё один выход во float64, и произведение `entryFee × (size·f)/size`
+   * отличается от `entryFee × f` в последнем разряде. Одна и та же лестница выходов дала бы у двух
+   * lifecycle разные комиссии — при верном суммарном PnL и потому незаметно.
+   *
+   * Отсутствие при частичном закрытии законно и означает другой случай: биржа исполнила заявку не
+   * целиком. Запрошенной доли тогда не существует вовсе, и апорционирование идёт по фактическому
+   * отношению. У legacy такого случая нет — он всегда закрывает ровно то, что попросили.
+   */
+  readonly closeFraction?: number;
 }
 
 /** Принудительный выход по концу данных: последняя цена и её метка. */
@@ -86,7 +101,14 @@ export interface ForcedExit {
 export interface ActorTrade {
   /** Номер эры позиции: 0-based, растёт на каждом открытии из flat и на каждом флипе. */
   readonly era: number;
-  /** Порядковый номер закрытия в пределах прогона — как `closeSeq` legacy-сделки. */
+  /**
+   * Порядковый номер закрытия В ПРЕДЕЛАХ ЭРЫ — как `closeSeq` legacy-сделки.
+   *
+   * Именно эры, а не прогона: `Portfolio.settleOpen` обнуляет счётчик на каждом открытии позиции.
+   * Разница видна со второй эры и не только в этом поле — от `closeSeq > 0` зависит «богатая»
+   * форма идентификатора сделки, поэтому глобальный счётчик переименовал бы половину сделок
+   * прогона, не тронув ни одного числа.
+   */
   readonly closeSeq: number;
   readonly side: 'long' | 'short';
   /** Филлы, набравшие эру. Полный список, а не последний: «fills by causation» (§3.7). */
@@ -147,6 +169,21 @@ export function syntheticExitFillId(era: number): string {
 }
 
 /**
+ * Доля обязана лежать строго между нулём и единицей.
+ *
+ * Ноль означает «закрыть ничего», единица — полное закрытие, у которого доли нет по определению;
+ * оба значения говорят, что хост посчитал долю неверно, а не что он просит необычного.
+ */
+function assertFraction(fillId: string, fraction: number): void {
+  if (!Number.isFinite(fraction) || fraction <= 0 || fraction >= 1) {
+    throw new RangeError(
+      `deriveActorTrades: closeFraction ${fraction} у филла ${fillId} вне (0, 1) — ` +
+        'частичное закрытие не бывает ни нулевым, ни полным',
+    );
+  }
+}
+
+/**
  * Свернуть журнал в сделки.
  *
  * Границы эр определяются ТЕМ ЖЕ `netQty`, что и в `applyFill`: точный десятичный ноль, а не
@@ -160,10 +197,28 @@ export function deriveActorTrades(
     readonly forcedExit?: ForcedExit;
   },
 ): ActorTradeDerivation {
-  const reasonOf = new Map(options.closes.map((c) => [c.exitFillId, c.closeReason]));
+  // Аннотации — ТОЧНОЕ МНОЖЕСТВО, а не словарь подсказок. Дубликат в `new Map` молча оставил бы
+  // последний, неиспользованная аннотация молча исчезла бы, а повешенная на филл ВХОДА не сработала
+  // бы никогда. Все три — дефекты хоста, и все три при мягком чтении неотличимы от нормы.
+  const annotationOf = new Map<string, CloseAnnotation>();
+  for (const c of options.closes) {
+    if (annotationOf.has(c.exitFillId)) {
+      throw new RangeError(
+        `deriveActorTrades: аннотация закрытия для филла ${c.exitFillId} задана дважды — ` +
+          'какая из двух причин верна, здесь решить нечем',
+      );
+    }
+    annotationOf.set(c.exitFillId, c);
+  }
+  const consumed = new Set<string>();
+
   const trades: ActorTrade[] = [];
   let era: Era | null = null;
   let eraCount = 0;
+  // Счётчик закрытий — ПО ЭРЕ, а не по прогону: `Portfolio.settleOpen` обнуляет его на каждом
+  // открытии позиции, и от него зависят и `Trade.closeSeq`, и «богатая» форма идентификатора
+  // (`closeSeq > 0`). Глобальный счётчик разошёлся бы с legacy на второй же эре: два прогона с
+  // одним полным выходом в каждом дали бы `-c1` там, где legacy даёт имя без суффикса.
   let closeSeq = 0;
 
   const closeShare = (
@@ -172,14 +227,25 @@ export function deriveActorTrades(
     closed: number,
     reason: CloseReason,
     synthetic: boolean,
+    requestedFraction: number | undefined,
   ): void => {
     const partial = closed !== current.size;
     // При полном закрытии доля не считается вовсе — накопленное уходит целиком. Умножение на
     // единицу дало бы лишний выход во float64 там, где ответ известен точно.
-    const entryFeeClosed = partial ? portionOf(current.entryFee, closed, current.size) : current.entryFee;
-    const fundingClosed = partial
-      ? portionOf(current.fundingAccrued, closed, current.size)
-      : current.fundingAccrued;
+    //
+    // При частичном апорционирование идёт по ЗАПРОШЕННОЙ доле, если она известна: ровно то
+    // выражение, что у `Portfolio.closePosition`. Отношение `closed / size` — та же величина
+    // математически и другая побитово (см. doc `CloseAnnotation.closeFraction`).
+    const entryFeeClosed = !partial
+      ? current.entryFee
+      : requestedFraction !== undefined
+        ? mul(current.entryFee, requestedFraction)
+        : portionOf(current.entryFee, closed, current.size);
+    const fundingClosed = !partial
+      ? current.fundingAccrued
+      : requestedFraction !== undefined
+        ? mul(current.fundingAccrued, requestedFraction)
+        : portionOf(current.fundingAccrued, closed, current.size);
     const gross = grossOnClose(current.side, current.entryPrice, exitFill.price, closed);
     trades.push({
       era: current.index,
@@ -252,24 +318,46 @@ export function deriveActorTrades(
       continue;
     }
 
-    const reason = reasonOf.get(fill.fillId);
-    if (reason === undefined) {
+    const annotation = annotationOf.get(fill.fillId);
+    if (annotation === undefined) {
       throw new RangeError(
         `deriveActorTrades: у закрывающего филла ${fill.fillId} нет аннотации причины — ` +
           'причину закрытия знает только хост, и подставить её здесь нечем',
       );
     }
+    consumed.add(fill.fillId);
 
     const rest = netQty(signed, delta);
     if (rest === 0 || Math.sign(rest) === Math.sign(signed)) {
       // Сокращение без пересечения нуля, включая точное обнуление.
-      closeShare(era, fill, fill.qty, reason, false);
-      if (rest === 0) era = null;
+      const full = rest === 0;
+      if (full && annotation.closeFraction !== undefined) {
+        throw new RangeError(
+          `deriveActorTrades: у филла ${fill.fillId} закрытие полное, а задана closeFraction ` +
+            `${annotation.closeFraction} — доля у полного закрытия означает, что хост считал ` +
+            'закрытие частичным, и одно из двух неверно',
+        );
+      }
+      if (!full && annotation.closeFraction !== undefined) {
+        assertFraction(fill.fillId, annotation.closeFraction);
+      }
+      closeShare(era, fill, fill.qty, annotation.closeReason, false, annotation.closeFraction);
+      if (full) {
+        era = null;
+        // Счётчик закрытий принадлежит ЭРЕ: следующая начинает с нуля, как `settleOpen` у legacy.
+        closeSeq = 0;
+      }
       continue;
     }
 
     // Флип: старая эра закрывается ЦЕЛИКОМ, и комиссия cross-zero филла уходит на неё полностью.
-    closeShare(era, fill, era.size, reason, false);
+    if (annotation.closeFraction !== undefined) {
+      throw new RangeError(
+        `deriveActorTrades: у филла ${fill.fillId} закрытие через ноль с флипом, а задана ` +
+          `closeFraction ${annotation.closeFraction} — старая эра закрывается целиком, доли у неё нет`,
+      );
+    }
+    closeShare(era, fill, era.size, annotation.closeReason, false, undefined);
     era = {
       index: eraCount,
       side: delta > 0 ? 'long' : 'short',
@@ -282,6 +370,19 @@ export function deriveActorTrades(
       openedAtUs: fill.tsUs,
     };
     eraCount += 1;
+    closeSeq = 0;
+  }
+
+  // Аннотация, не сработавшая ни разу, — потерянная причина, а не безобидный мусор. Чаще всего она
+  // повешена на филл ВХОДА: закрытие тогда идёт без своей причины и падает отдельной ошибкой, из
+  // которой не видно, что причина вообще-то была написана — просто не там.
+  const unused = options.closes.filter((c) => !consumed.has(c.exitFillId));
+  if (unused.length > 0) {
+    throw new RangeError(
+      `deriveActorTrades: аннотации закрытия не сработали ни разу: ${unused
+        .map((c) => c.exitFillId)
+        .join(', ')} — такой филл либо не закрывает позицию (вход или доливка), либо его нет в журнале`,
+    );
   }
 
   if (era === null) return { trades, openEraResidual: EMPTY_RESIDUAL };
@@ -307,7 +408,7 @@ export function deriveActorTrades(
     // частичной, а «у каждого филла есть причина» проверяемо только когда исключений нет.
     causedBy: syntheticExitFillId(era.index),
   };
-  closeShare(era, syntheticExitFill, era.size, 'end_of_data', true);
+  closeShare(era, syntheticExitFill, era.size, 'end_of_data', true, undefined);
   return { trades, openEraResidual, syntheticExitFill };
 }
 
