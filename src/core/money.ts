@@ -173,6 +173,18 @@ function notionalAtShiftedPrice(size: number, base: number, bps: number, dir: 1 
 
 /** Фактическое исполнение: что реально исполнилось, на какие деньги и с какой комиссией. */
 export interface ExecutedFill {
+  /**
+   * Цена исполнения — ТА САМАЯ, по которой посчитаны размер, нотионал и комиссия.
+   *
+   * Возвращается, а не оставляется вызывающему, и это не удобство. Пока её не было, хост писал цену
+   * в филл отдельным вызовом `shiftBps(base, bps, dir)` — то есть повторял три параметра ещё раз, и
+   * ничто не мешало повторить их ИНАЧЕ: с другим знаком, с другим bps или с базой соседнего матча.
+   * Запись прогона тогда называла бы одну цену, а деньги считались бы по другой; расхождение
+   * выглядело бы как проскальзывание, а не как ошибка.
+   *
+   * Одно вычисление — один источник. Второго способа получить цену исполнения на actor-пути нет.
+   */
+  readonly executionPrice: number;
   /** Размер в базовой валюте. При клампе — РОВНО переданный остаток позиции. */
   readonly filledSize: number;
   /** Нотионал исполнения. При полном филле — РОВНО запрошенный, без пересчёта. */
@@ -222,6 +234,7 @@ export function executeFill(
   if (cap === null || cap.gte(requestedSize)) {
     // Полный филл: нотионал — ровно тот, что просили. Комиссия — его доля.
     return {
+      executionPrice: execPrice.toNumber(),
       filledSize: requestedSize.toNumber(),
       filledNotional: requestedNotional,
       fee: portionBps(requestedNotional, feeBps),
@@ -233,6 +246,7 @@ export function executeFill(
   // опубликованного нотионала, а не второй независимый расчёт от цены и размера.
   const filledNotional = cap.times(execPrice).toNumber();
   return {
+    executionPrice: execPrice.toNumber(),
     filledSize: cap.toNumber(),
     filledNotional,
     fee: portionBps(filledNotional, feeBps),

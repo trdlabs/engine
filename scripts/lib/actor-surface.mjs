@@ -92,4 +92,20 @@ export const DERIVATION_SMOKE = `
     let unannotated = false;
     try { engine.deriveActorTrades(jrnl, { closes: [] }); } catch { unannotated = true; }
     if (!unannotated) throw new Error('принят закрывающий филл без аннотации причины');
+
+    // Исполнение — одной операцией, и ЦЕНА приходит из неё же (0.15.0). Проверяется по тарболлу,
+    // потому что отсутствующее поле у потребителя выглядит как undefined в записи филла, а не как
+    // ошибка сборки: прогон пройдёт, а цена в артефакте окажется пустой.
+    const filled = engine.executeFill(1000, 100, 50, 1, null, 7);
+    if (filled.executionPrice !== engine.shiftBps(100, 50, 1)) {
+      throw new Error('executionPrice не совпал со сдвигом теми же параметрами: ' + filled.executionPrice);
+    }
+    if (filled.executionPrice === 100) throw new Error('проскальзывание не применено к цене исполнения');
+    if (filled.filledNotional !== 1000) throw new Error('полный филл не сохранил запрошенный нотионал');
+    if (filled.fee !== 0.7) throw new Error('комиссия не доля опубликованного нотионала: ' + filled.fee);
+    const clampedFill = engine.executeFill(1000, 100, 50, 1, 0.5, 7);
+    if (!clampedFill.clamped || clampedFill.filledSize !== 0.5) throw new Error('кламп не сработал');
+    if (clampedFill.executionPrice !== filled.executionPrice) {
+      throw new Error('клампнутый путь отдал другую цену исполнения');
+    }
 `;
