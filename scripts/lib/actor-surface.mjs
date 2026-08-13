@@ -108,4 +108,18 @@ export const DERIVATION_SMOKE = `
     if (clampedFill.executionPrice !== filled.executionPrice) {
       throw new Error('клампнутый путь отдал другую цену исполнения');
     }
+    // Исход РАЗЛИЧИМ (0.16.0): сокращать нечего — заявка снимается, а не исполняется на ноль.
+    // Проверяется по тарболлу, потому что нулевой филл у потребителя доезжает до applyFill и
+    // роняет прогон броском, а не выглядит как отсутствие исполнения.
+    if (filled.kind !== 'filled' || clampedFill.kind !== 'filled') {
+      throw new Error('исход исполнения не размечен видом');
+    }
+    const flat = engine.executeFill(1000, 100, 50, 1, 0, 7);
+    if (flat.kind !== 'canceled' || flat.reason !== 'reduce_only_flat') {
+      throw new Error('нулевой остаток не дал снятия: ' + JSON.stringify(flat));
+    }
+    if ('filledSize' in flat) throw new Error('снятие принесло размер, которого у него быть не может');
+    let negative = false;
+    try { engine.executeFill(1000, 100, 50, 1, -1, 7); } catch { negative = true; }
+    if (!negative) throw new Error('принят отрицательный остаток позиции');
 `;

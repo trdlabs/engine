@@ -196,6 +196,26 @@ export interface ExecutedFill {
 }
 
 /**
+ * Заявка НЕ исполнилась, и это законный исход, а не ошибка.
+ *
+ * `reduce_only_flat`: к моменту срабатывания сокращать стало нечего — позиция закрыта другой
+ * заявкой между подачей этой и её триггером. Ситуация штатная: `reduceOnly` живёт именно ради неё.
+ *
+ * ПОЧЕМУ НЕ НУЛЕВОЙ ФИЛЛ. Нулевой размер — не исполнение, а его отсутствие, и бухгалтерия это
+ * подтверждает: `applyFill` отвергает `qty <= 0` броском. Вернув `{ filledSize: 0 }`, операция
+ * отдала бы вызывающему значение, которое нельзя применить, и разбираться в этом пришлось бы ему —
+ * то есть та же развилка у потребителя, ради устранения которой операция и стала атомарной.
+ * Правильный исход называется словом: заявка СНИМАЕТСЯ.
+ */
+export interface CanceledExecution {
+  readonly kind: 'canceled';
+  readonly reason: 'reduce_only_flat';
+}
+
+/** Исход исполнения — РАЗЛИЧИМЫЙ union: либо филл, либо снятие с названной причиной. */
+export type FillOutcome = ({ readonly kind: 'filled' } & ExecutedFill) | CanceledExecution;
+
+/**
  * ОДНА операция исполнения: матч → сдвиг → размер → кламп → нотионал → комиссия.
  *
  * ЗАЧЕМ ЦЕЛИКОМ, А НЕ ТРЕМЯ ПРИМИТИВАМИ. Набор `min` + `notionalAtShiftedPrice` +
@@ -218,6 +238,14 @@ export interface ExecutedFill {
  *
  * `sizeCap` — остаток позиции для `reduceOnly`; `null` означает «ограничения нет». Сравнение с ним
  * идёт в ДЕСЯТИЧНОЙ точности, до выхода во float: иначе сам факт клампа зависел бы от округления.
+ *
+ * ИСХОД РАЗЛИЧИМ. `sizeCap === 0` означает, что сокращать нечего — позиция закрыта между подачей
+ * заявки и её срабатыванием, — и это НЕ филл нулевого размера, а снятие заявки. Отдай операция
+ * `{ filledSize: 0 }`, вызывающий получил бы значение, которое `applyFill` отвергает броском, и
+ * разбирался бы сам.
+ *
+ * Отрицательный `sizeCap` отвергается броском: остаток позиции не бывает отрицательным, а
+ * молчаливая трактовка (как ноль? по модулю?) была бы догадкой о том, что имел в виду вызывающий.
  */
 export function executeFill(
   requestedNotional: number,
@@ -226,14 +254,23 @@ export function executeFill(
   dir: 1 | -1,
   sizeCap: number | null,
   feeBps: number,
-): ExecutedFill {
+): FillOutcome {
+  if (sizeCap !== null && sizeCap < 0) {
+    throw new RangeError(`executeFill: остаток позиции не бывает отрицательным, получено ${sizeCap}`);
+  }
   const execPrice = new Decimal(base).times(bpsFactor(slippageBps, dir));
   const requestedSize = new Decimal(requestedNotional).div(execPrice);
   const cap = sizeCap === null ? null : new Decimal(sizeCap);
 
+  if (cap !== null && cap.isZero()) {
+    // Сокращать нечего. Заявка снимается — с названной причиной, а не растворяется в нулевом филле.
+    return { kind: 'canceled', reason: 'reduce_only_flat' };
+  }
+
   if (cap === null || cap.gte(requestedSize)) {
     // Полный филл: нотионал — ровно тот, что просили. Комиссия — его доля.
     return {
+      kind: 'filled',
       executionPrice: execPrice.toNumber(),
       filledSize: requestedSize.toNumber(),
       filledNotional: requestedNotional,
@@ -246,6 +283,7 @@ export function executeFill(
   // опубликованного нотионала, а не второй независимый расчёт от цены и размера.
   const filledNotional = cap.times(execPrice).toNumber();
   return {
+    kind: 'filled',
     executionPrice: execPrice.toNumber(),
     filledSize: cap.toNumber(),
     filledNotional,
