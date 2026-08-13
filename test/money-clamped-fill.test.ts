@@ -13,6 +13,13 @@
 import { describe, expect, it } from 'vitest';
 import { Decimal } from 'decimal.js';
 import { executeFill, shiftBps, sizeAtShiftedPrice } from '../src/index.js';
+import type { FillOutcome } from '../src/index.js';
+
+/** Сузить исход до филла. Отдельным помощником, чтобы каждая проба не повторяла проверку вида. */
+const filled = (o: FillOutcome) => {
+  if (o.kind !== 'filled') throw new Error(`ожидался филл, получено снятие: ${o.reason}`);
+  return o;
+};
 
 const BASE = 103.37;
 const NOTIONAL = 1000;
@@ -25,7 +32,7 @@ const share = (notional: number, bps: number): number =>
 
 describe('полный филл: нотионал сохраняется буквально', () => {
   it('запрошенный нотионал НЕ пересчитывается', () => {
-    const r = executeFill(NOTIONAL, BASE, SLIP, 1, null, FEE_BPS);
+    const r = filled(executeFill(NOTIONAL, BASE, SLIP, 1, null, FEE_BPS));
     expect(r.clamped).toBe(false);
     // Ровно просьба автора. Пересчёт дал бы соседнее число: круговой ход «нотионал → размер →
     // нотионал» не тождественен, потому что деление уже округлило размер.
@@ -34,13 +41,13 @@ describe('полный филл: нотионал сохраняется бук�
   });
 
   it('комиссия — доля ОПУБЛИКОВАННОГО нотионала, побитово', () => {
-    const r = executeFill(NOTIONAL, BASE, SLIP, 1, null, FEE_BPS);
+    const r = filled(executeFill(NOTIONAL, BASE, SLIP, 1, null, FEE_BPS));
     expect(r.fee).toBe(share(r.filledNotional, FEE_BPS));
   });
 
   it('остаток позиции БОЛЬШЕ запрошенного размера — филл остаётся полным', () => {
     const full = sizeAtShiftedPrice(NOTIONAL, BASE, SLIP, 1);
-    const r = executeFill(NOTIONAL, BASE, SLIP, 1, full * 2, FEE_BPS);
+    const r = filled(executeFill(NOTIONAL, BASE, SLIP, 1, full * 2, FEE_BPS));
     expect(r.clamped).toBe(false);
     expect(r.filledNotional).toBe(NOTIONAL);
   });
@@ -50,7 +57,7 @@ describe('полный филл: нотионал сохраняется бук�
     // граница наблюдаема — при неточном делении float-остаток почти всегда чуть больше точного
     // частного, и строгое сравнение ведёт себя как нестрогое. Первая редакция этой пробы стояла на
     // 103.37 и мутацию `>=` → `>` не поймала: сравнение уходило в ту же ветку по округлению.
-    const r = executeFill(1000, 100, 0, 1, 10, FEE_BPS);
+    const r = filled(executeFill(1000, 100, 0, 1, 10, FEE_BPS));
     expect(r.filledSize).toBe(10);
     expect(r.clamped).toBe(false);
     expect(r.filledNotional).toBe(1000);
@@ -59,7 +66,7 @@ describe('полный филл: нотионал сохраняется бук�
 
   it('ГРАНИЦА С ДРУГОЙ СТОРОНЫ: остаток на волос меньше — уже кламп', () => {
     // Иначе «равенство — полный филл» зеленело бы у реализации, никогда не клампящей вовсе.
-    const r = executeFill(1000, 100, 0, 1, 9.999999, FEE_BPS);
+    const r = filled(executeFill(1000, 100, 0, 1, 9.999999, FEE_BPS));
     expect(r.clamped).toBe(true);
     expect(r.filledSize).toBe(9.999999);
     expect(r.filledNotional).toBeLessThan(1000);
@@ -68,7 +75,7 @@ describe('полный филл: нотионал сохраняется бук�
 
 describe('клампнутый филл: нотионал и комиссия из одной цепочки', () => {
   const CAP = 3.71;
-  const r = executeFill(NOTIONAL, BASE, SLIP, -1, CAP, FEE_BPS);
+  const r = filled(executeFill(NOTIONAL, BASE, SLIP, -1, CAP, FEE_BPS));
 
   it('исполняется РОВНО остаток позиции', () => {
     expect(r.clamped).toBe(true);
@@ -96,7 +103,7 @@ describe('клампнутый филл: нотионал и комиссия и
       { cap: 0.18680000000000002, base: 61234.19, feeBps: 5 },
     ];
     for (const w of witnesses) {
-      const out = executeFill(1_000_000, w.base, SLIP, 1, w.cap, w.feeBps);
+      const out = filled(executeFill(1_000_000, w.base, SLIP, 1, w.cap, w.feeBps));
       expect(out.clamped).toBe(true);
       const oldChain = new Decimal(w.base)
         .times(new Decimal(1).plus(new Decimal(SLIP).div(10_000)))
@@ -118,7 +125,7 @@ describe('инвариант держится на разнородных вхо
     for (let i = 1; i <= 40; i += 1) {
       const cap = 0.017 + i * 0.313;
       for (const base of [103.37, 0.08123, 61234.19]) {
-        const r = executeFill(NOTIONAL, base, SLIP, i % 2 === 0 ? 1 : -1, cap, FEE_BPS);
+        const r = filled(executeFill(NOTIONAL, base, SLIP, i % 2 === 0 ? 1 : -1, cap, FEE_BPS));
         expect(r.fee).toBe(share(r.filledNotional, FEE_BPS));
         if (r.clamped) {
           clampedSeen += 1;
@@ -141,13 +148,56 @@ describe('инвариант держится на разнородных вхо
   });
 });
 
+describe('сокращать нечего: заявка СНИМАЕТСЯ, а не исполняется на ноль', () => {
+  it('СЦЕНАРИЙ: заявка принята при открытой позиции, позиция закрыта другой до триггера', () => {
+    // Момент подачи: позиция 4.0, reduceOnly-заявка законна и исполнилась бы.
+    expect(executeFill(NOTIONAL, BASE, SLIP, -1, 4, FEE_BPS).kind).toBe('filled');
+
+    // Между подачей и срабатыванием позицию закрыла ДРУГАЯ заявка. Остаток стал нулём — и это не
+    // ошибка вызывающего, а ровно та гонка, ради которой reduceOnly существует.
+    const atTrigger = executeFill(NOTIONAL, BASE, SLIP, -1, 0, FEE_BPS);
+    expect(atTrigger.kind).toBe('canceled');
+    if (atTrigger.kind !== 'canceled') throw new Error('ожидалось снятие');
+    expect(atTrigger.reason).toBe('reduce_only_flat');
+  });
+
+  it('у снятия нет ни размера, ни денег — нулевой филл не возвращается ВОВСЕ', () => {
+    // Прежняя редакция отдавала `{ filledSize: 0, filledNotional: 0, fee: 0 }`. Такое значение
+    // нельзя применить: `applyFill` отвергает `qty <= 0` броском, — и разбираться пришлось бы
+    // вызывающему, то есть развилка возвращалась бы к нему же.
+    const r = executeFill(NOTIONAL, BASE, SLIP, -1, 0, FEE_BPS);
+    expect(Object.keys(r).sort()).toEqual(['kind', 'reason']);
+    expect('filledSize' in r).toBe(false);
+    expect('fee' in r).toBe(false);
+  });
+
+  it('ПРОВЕРКА ПРОВЕРКИ: остаток «на пылинку» больше нуля — это ещё филл', () => {
+    // Иначе «ноль → снятие» зеленело бы у реализации, снимающей любой кламп подряд.
+    const r = filled(executeFill(NOTIONAL, BASE, SLIP, -1, 1e-9, FEE_BPS));
+    expect(r.clamped).toBe(true);
+    expect(r.filledSize).toBe(1e-9);
+    expect(r.filledNotional).toBeGreaterThan(0);
+  });
+
+  it('отрицательный остаток — бросок: догадываться о смысле нечего', () => {
+    // Остаток позиции не бывает отрицательным. Молчаливая трактовка (как ноль? по модулю?) была бы
+    // догадкой о том, что имел в виду вызывающий, и увела бы дефект знака в деньги.
+    expect(() => executeFill(NOTIONAL, BASE, SLIP, -1, -1, FEE_BPS)).toThrow(RangeError);
+    expect(() => executeFill(NOTIONAL, BASE, SLIP, -1, -1e-12, FEE_BPS)).toThrow(/не бывает отрицательным/);
+  });
+
+  it('без ограничения (null) снятия не бывает — путь не задет', () => {
+    expect(executeFill(NOTIONAL, BASE, SLIP, 1, null, FEE_BPS).kind).toBe('filled');
+  });
+});
+
 describe('цена исполнения возвращается ОТТУДА ЖЕ, где посчитаны размер и деньги', () => {
   // Пока её не было, хост писал цену в филл отдельным вызовом `shiftBps(base, bps, dir)` — то есть
   // повторял три параметра ещё раз, и ничто не мешало повторить их ИНАЧЕ. Запись прогона называла бы
   // одну цену, а деньги считались бы по другой, и расхождение выглядело бы как проскальзывание.
 
   it('покупка: цена ВЫШЕ базы и равна сдвигу теми же параметрами', () => {
-    const r = executeFill(NOTIONAL, BASE, SLIP, 1, null, FEE_BPS);
+    const r = filled(executeFill(NOTIONAL, BASE, SLIP, 1, null, FEE_BPS));
     expect(r.executionPrice).toBeGreaterThan(BASE);
     expect(r.executionPrice).toBe(shiftBps(BASE, SLIP, 1));
     // И это НЕ цена противоположного направления — мутация знака ловится здесь.
@@ -155,7 +205,7 @@ describe('цена исполнения возвращается ОТТУДА Ж
   });
 
   it('продажа: цена НИЖЕ базы и равна сдвигу теми же параметрами', () => {
-    const r = executeFill(NOTIONAL, BASE, SLIP, -1, null, FEE_BPS);
+    const r = filled(executeFill(NOTIONAL, BASE, SLIP, -1, null, FEE_BPS));
     expect(r.executionPrice).toBeLessThan(BASE);
     expect(r.executionPrice).toBe(shiftBps(BASE, SLIP, -1));
     expect(r.executionPrice).not.toBe(shiftBps(BASE, SLIP, 1));
@@ -163,26 +213,26 @@ describe('цена исполнения возвращается ОТТУДА Ж
 
   it('ненулевой slippage ДЕЙСТВИТЕЛЬНО сдвигает — цена не равна базе', () => {
     // Иначе «равна сдвигу» зеленело бы у реализации, возвращающей базу и игнорирующей bps.
-    expect(executeFill(NOTIONAL, BASE, SLIP, 1, null, FEE_BPS).executionPrice).not.toBe(BASE);
-    expect(executeFill(NOTIONAL, BASE, SLIP, -1, null, FEE_BPS).executionPrice).not.toBe(BASE);
+    expect(filled(executeFill(NOTIONAL, BASE, SLIP, 1, null, FEE_BPS)).executionPrice).not.toBe(BASE);
+    expect(filled(executeFill(NOTIONAL, BASE, SLIP, -1, null, FEE_BPS)).executionPrice).not.toBe(BASE);
     // При нулевом — равна: сдвиг применяется ровно тогда, когда его просят.
-    expect(executeFill(NOTIONAL, BASE, 0, 1, null, FEE_BPS).executionPrice).toBe(BASE);
+    expect(filled(executeFill(NOTIONAL, BASE, 0, 1, null, FEE_BPS)).executionPrice).toBe(BASE);
   });
 
   it('размер и деньги посчитаны ПО НЕЙ ЖЕ — на полном и на клампнутом пути', () => {
     // Связь проверяется через величину, которую цена определяет однозначно: запрошенный нотионал,
     // делённый на цену исполнения, даёт исполненный размер. Сравнение с допуском намеренно —
     // деление внутри идёт по НЕокруглённой цене, и точного равенства здесь быть не может.
-    const full = executeFill(NOTIONAL, BASE, SLIP, 1, null, FEE_BPS);
+    const full = filled(executeFill(NOTIONAL, BASE, SLIP, 1, null, FEE_BPS));
     expect(NOTIONAL / full.executionPrice).toBeCloseTo(full.filledSize, 9);
 
-    const clamped = executeFill(NOTIONAL, BASE, SLIP, -1, 3.71, FEE_BPS);
+    const clamped = filled(executeFill(NOTIONAL, BASE, SLIP, -1, 3.71, FEE_BPS));
     expect(clamped.clamped).toBe(true);
     expect(clamped.filledSize * clamped.executionPrice).toBeCloseTo(clamped.filledNotional, 9);
   });
 
   it('цена приходит на ОБОИХ путях — клампнутый её тоже несёт', () => {
-    const clamped = executeFill(NOTIONAL, BASE, SLIP, 1, 0.001, FEE_BPS);
+    const clamped = filled(executeFill(NOTIONAL, BASE, SLIP, 1, 0.001, FEE_BPS));
     expect(clamped.clamped).toBe(true);
     expect(clamped.executionPrice).toBe(shiftBps(BASE, SLIP, 1));
   });
