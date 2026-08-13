@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import { timestampUs } from '../src/contract/index.js';
 import { isEligibleForBar, matchBar, type Bar, type RestingOrder } from '../src/actor/sim-exchange.js';
+import { mul, shiftBps, sizeAtShiftedPrice } from '../src/core/money.js';
 
 const t = (n: number) => timestampUs(1_700_000_000_000_000 + n * 60_000_000);
 
@@ -22,7 +23,6 @@ const bar = (over: Partial<Bar> = {}): Bar => ({
 });
 
 const order = (over: Partial<RestingOrder> & { orderId: string; kind: RestingOrder['kind']; side: RestingOrder['side'] }): RestingOrder => ({
-  qty: 1,
   placedAtTsUs: t(4),
   ...over,
 });
@@ -49,7 +49,7 @@ describe('sim-exchange: анти-лукахед', () => {
   it('market исполняется немедленно, даже поданный на этом баре', () => {
     // Рыночная заявка не выбирает цену — она берёт то, что есть, и лукахеда в этом нет.
     const o = order({ orderId: 'm', kind: 'market', side: 'buy', placedAtTsUs: t(5) });
-    expect(matchBar([o], bar(), 'buy')).toEqual({ orderId: 'm', price: 100, qty: 1 });
+    expect(matchBar([o], bar(), 'buy')).toEqual({ orderId: 'm', price: 100 });
   });
 });
 
@@ -121,5 +121,47 @@ describe('sim-exchange: чего здесь НЕТ', () => {
 
   it('пустой список заявок даёт null, а не выдуманный филл', () => {
     expect(matchBar([], bar(), 'buy')).toBeNull();
+  });
+});
+
+describe('матчинг двухфазен: размера нет до цены исполнения', () => {
+  const market = () => order({ orderId: 'm', kind: 'market', side: 'buy' });
+
+  it('первая фаза не отдаёт размер вовсе — в ответе ровно два поля', () => {
+    // Не «размер равен нулю» и не «размер опционален»: поля НЕТ. Пока оно было, вызывающий обязан
+    // был чем-то его заполнить, а заполнить правдой было нечем — и в 083 S3 туда уехали по очереди
+    // нотионал (другая единица), оценка по последней увиденной цене и ноль.
+    const m = matchBar([market()], bar(), 'buy');
+    expect(m).not.toBeNull();
+    expect(Object.keys(m!).sort()).toEqual(['orderId', 'price']);
+  });
+
+  it('resting-заявка с размером не типизируется — поле закрыто, а не проигнорировано', () => {
+    const bad = {
+      orderId: 'x',
+      kind: 'market' as const,
+      side: 'buy' as const,
+      placedAtTsUs: t(4),
+      // @ts-expect-error — размера у resting-заявки нет: он не существует до цены исполнения.
+      qty: 1,
+    } satisfies RestingOrder;
+    expect(bad.orderId).toBe('x');
+  });
+
+  it('вторая фаза считает размер от нотионала по СДВИНУТОЙ цене одним выражением', () => {
+    const m = matchBar([market()], bar(), 'buy')!;
+    // Покупка: сдвиг против инициатора, вверх. 100 → 100.5 при 50 bps.
+    expect(shiftBps(m.price, 50, 1)).toBe(100.5);
+    // Размер считается от ДЕНЕГ и по той же сдвинутой цене — промежуточного выхода во float между
+    // сдвигом и делением нет, поэтому нотионал восстанавливается точно.
+    const qty = sizeAtShiftedPrice(1000, m.price, 50, 1);
+    expect(mul(qty, shiftBps(m.price, 50, 1))).toBe(1000);
+  });
+
+  it('ПРОВЕРКА ПРОВЕРКИ: нулевой сдвиг оставляет цену матча и делит на неё же', () => {
+    // Иначе «сдвиг применён» зеленело бы у реализации, портящей цену любым способом.
+    const m = matchBar([market()], bar(), 'buy')!;
+    expect(shiftBps(m.price, 0, 1)).toBe(m.price);
+    expect(sizeAtShiftedPrice(1000, m.price, 0, 1)).toBe(10);
   });
 });
