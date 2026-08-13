@@ -25,7 +25,7 @@ export const ACTOR_SURFACE = [
   'restore', 'replaceAuthorState', 'validateAuthorState',
   'createActorHost', 'CheckpointBoundaryViolation',
   'traceToMicroseconds', 'traceToMillisProjection',
-  'deriveActorTrades', 'reconcileRealizedPnl', 'syntheticExitFillId',
+  'deriveActorTrades', 'reconcileRealizedPnl', 'canonicalRealizedPnl', 'syntheticExitFillId',
 ];
 
 /**
@@ -63,6 +63,25 @@ export const DERIVATION_SMOKE = `
     if (engine.reconcileRealizedPnl(derived) !== ledgerOfJournal.realizedPnl) {
       throw new Error('сделки и леджер РАЗОШЛИСЬ: ' + engine.reconcileRealizedPnl(derived)
         + ' против ' + ledgerOfJournal.realizedPnl);
+    }
+    // Канон сверяется ПОБИТОВО и на числах, которые в уме не считаются: сумма сделок лежит на
+    // другой решётке округления и на такой ленте с леджером не совпадает (0.11.0). Круглые числа
+    // выше этого не показывают — там обе решётки дают один float.
+    const messy = [
+      { kind: 'fill', fill: { fillId: 'm1', tsUs: 1000000, price: 101, qty: 1000 / 100.5, side: 'buy', fee: 0.5024875621890548, causedBy: 'o1' } },
+      { kind: 'fill', fill: { fillId: 'm2', tsUs: 2000000, price: 104, qty: 1000 / 103.5, side: 'sell', fee: 0.5024154589371981, causedBy: 'o2' } },
+    ];
+    const messyDerived = engine.deriveActorTrades(messy, {
+      closes: [{ exitFillId: 'm2', closeReason: 'strategy_exit' }],
+    });
+    let messyLedger = engine.EMPTY_LEDGER;
+    for (const e of messy) messyLedger = engine.applyFill(messyLedger, e.fill);
+    if (!Object.is(engine.canonicalRealizedPnl(messyDerived), messyLedger.realizedPnl)) {
+      throw new Error('канон НЕ побитов: ' + engine.canonicalRealizedPnl(messyDerived)
+        + ' против ' + messyLedger.realizedPnl);
+    }
+    if (Object.is(engine.reconcileRealizedPnl(messyDerived), messyLedger.realizedPnl)) {
+      throw new Error('артефактная сводка совпала побитово — повод для канона исчез, проверьте гейт');
     }
     let unannotated = false;
     try { engine.deriveActorTrades(jrnl, { closes: [] }); } catch { unannotated = true; }

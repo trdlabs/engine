@@ -98,6 +98,7 @@ export {
 } from './actor/ledger.js';
 
 export {
+  canonicalRealizedPnl,
   deriveActorTrades,
   reconcileRealizedPnl,
   syntheticExitFillId,
