@@ -46,7 +46,7 @@
 // не порождая ни заявки, ни исполнения. Расхождение здесь означало бы, что один и тот же прогон
 // даёт разное число филлов в зависимости от lifecycle.
 
-import { add, grossOnClose, mul, netQty, portionOf, sub, subAll, weightedPrice } from '../core/money.js';
+import { accrueRealized, add, grossOnClose, mul, netQty, portionOf, sub, subAll, weightedPrice } from '../core/money.js';
 import type { CloseReason } from '../trace/artifacts.js';
 import type { TimestampUs } from '../contract/index.js';
 import type { Fill, FundingSettlement } from './ledger.js';
@@ -147,6 +147,21 @@ export interface ActorTradeDerivation {
   readonly openEraResidual: OpenEraResidual;
   /** Построен движком, если прогон закончился с открытой позицией и запрошен forced exit. */
   readonly syntheticExitFill?: Fill;
+  /**
+   * `realizedPnl` в КАНОНИЧЕСКОМ ПОРЯДКЕ — том же, в котором его считает `applyFill`.
+   *
+   * Величина накапливается по журналу теми же вызовами `accrueRealized` и с теми же аргументами,
+   * что у леджера: та же функция, тот же порядок, те же точки округления. Поэтому совпадение с
+   * `Ledger.realizedPnl` ПОБИТОВОЕ и по построению, а не с точностью до допуска.
+   *
+   * Проверяет она не тождество арифметики (оно тривиально), а МОДЕЛЬ ЭР деривации: цена входа эры,
+   * закрываемый размер и границы эр приходят отсюда. Разойдись деривация с леджером в том, где
+   * началась эра или по какой цене вошли, — разойдётся и это число.
+   *
+   * Отличается от `reconcileRealizedPnl` (см. её doc) намеренно: та сводит АРТЕФАКТНЫЕ величины
+   * сделок по legacy-соглашению о комиссии и потому лежит на другой решётке округлений.
+   */
+  readonly ledgerOrderRealizedPnl: number;
 }
 
 /** Живая эра позиции. Внутреннее состояние свёртки, наружу не уходит. */
@@ -251,6 +266,10 @@ export function deriveActorTrades(
   const trades: ActorTrade[] = [];
   let era: Era | null = null;
   let eraCount = 0;
+  // Канонический накопитель: ТЕ ЖЕ вызовы `accrueRealized`, что делает `applyFill`, в том же
+  // порядке и с теми же аргументами. Ни одного собственного выражения — иначе здесь завёлся бы
+  // второй интерпретатор бухгалтерии, ради прекращения которого этот пакет и существует.
+  let ledgerOrderRealizedPnl = 0;
   // Счётчик закрытий — ПО ЭРЕ, а не по прогону: `Portfolio.settleOpen` обнуляет его на каждом
   // открытии позиции, и от него зависят и `Trade.closeSeq`, и «богатая» форма идентификатора
   // (`closeSeq > 0`). Глобальный счётчик разошёлся бы с legacy на второй же эре: два прогона с
@@ -318,6 +337,8 @@ export function deriveActorTrades(
           `deriveActorTrades: funding-расчёт при отсутствии открытой позиции (ts ${String(entry.settlement.tsUs)})`,
         );
       }
+      // Зеркало `applyFunding`: леджер относит расчёт на `realizedPnl` В МОМЕНТ его возникновения.
+      ledgerOrderRealizedPnl = accrueRealized(ledgerOrderRealizedPnl, 0, 0, 0, 1, entry.settlement.cost);
       era.fundingAccrued = add(era.fundingAccrued, entry.settlement.cost);
       continue;
     }
@@ -329,6 +350,8 @@ export function deriveActorTrades(
     const delta = fill.side === 'buy' ? fill.qty : -fill.qty;
 
     if (era === null) {
+      // Зеркало ветки 1 `applyFill` (открытие из flat): комиссия реализуется сразу.
+      ledgerOrderRealizedPnl = accrueRealized(ledgerOrderRealizedPnl, 0, 0, 0, 1, fill.fee);
       era = {
         index: eraCount,
         side: delta > 0 ? 'long' : 'short',
@@ -345,7 +368,9 @@ export function deriveActorTrades(
 
     const signed = era.side === 'long' ? era.size : -era.size;
     if (Math.sign(signed) === Math.sign(delta)) {
-      // Наращивание: средняя пересчитывается взвешенно ТОЙ ЖЕ функцией, что в леджере.
+      // Наращивание: средняя пересчитывается взвешенно ТОЙ ЖЕ функцией, что в леджере, а комиссия
+      // — та же ветка 1 `applyFill`, что и открытие.
+      ledgerOrderRealizedPnl = accrueRealized(ledgerOrderRealizedPnl, 0, 0, 0, 1, fill.fee);
       const next = netQty(era.size, fill.qty);
       era.entryPrice = weightedPrice(era.entryPrice, era.size, fill.price, fill.qty, next);
       era.size = next;
@@ -378,6 +403,16 @@ export function deriveActorTrades(
         assertFraction(fill.fillId, annotation.closeFraction);
         assertFillMatchesFraction(fill.fillId, fill.qty, era.size, annotation.closeFraction);
       }
+      // Зеркало ветки 2 `applyFill` (сокращение, включая точное обнуление): закрывается
+      // `min(|current|, qty)` = `fill.qty`, вход — средняя цена эры.
+      ledgerOrderRealizedPnl = accrueRealized(
+        ledgerOrderRealizedPnl,
+        fill.price,
+        era.entryPrice,
+        fill.qty,
+        era.side === 'long' ? 1 : -1,
+        fill.fee,
+      );
       closeShare(era, fill, fill.qty, annotation.closeReason, false, annotation.closeFraction);
       if (full) {
         era = null;
@@ -394,6 +429,16 @@ export function deriveActorTrades(
           `closeFraction ${annotation.closeFraction} — старая эра закрывается целиком, доли у неё нет`,
       );
     }
+    // Зеркало ветки 3 `applyFill` (флип через ноль): закрывается ВСЯ старая экспозиция, комиссия
+    // cross-zero филла целиком уходит на закрываемую эру — там она тоже не делится.
+    ledgerOrderRealizedPnl = accrueRealized(
+      ledgerOrderRealizedPnl,
+      fill.price,
+      era.entryPrice,
+      era.size,
+      era.side === 'long' ? 1 : -1,
+      fill.fee,
+    );
     closeShare(era, fill, era.size, annotation.closeReason, false, undefined);
     era = {
       index: eraCount,
@@ -422,7 +467,7 @@ export function deriveActorTrades(
     );
   }
 
-  if (era === null) return { trades, openEraResidual: EMPTY_RESIDUAL };
+  if (era === null) return { trades, openEraResidual: EMPTY_RESIDUAL, ledgerOrderRealizedPnl };
 
   // Остаток снимается ДО синтетического закрытия: он описывает то, что леджер уже отнёс на
   // `realizedPnl`, а леджер синтетического филла не видел и не увидит.
@@ -431,7 +476,7 @@ export function deriveActorTrades(
     fundingAccrued: era.fundingAccrued,
   };
 
-  if (options.forcedExit === undefined) return { trades, openEraResidual };
+  if (options.forcedExit === undefined) return { trades, openEraResidual, ledgerOrderRealizedPnl };
 
   // Валюация, а не сделка: без комиссии и без проскальзывания (SSOT, решение 5).
   const syntheticExitFill: Fill = {
@@ -446,7 +491,7 @@ export function deriveActorTrades(
     causedBy: syntheticExitFillId(era.index),
   };
   closeShare(era, syntheticExitFill, era.size, 'end_of_data', true, undefined);
-  return { trades, openEraResidual, syntheticExitFill };
+  return { trades, openEraResidual, syntheticExitFill, ledgerOrderRealizedPnl };
 }
 
 /**
@@ -462,6 +507,39 @@ export function deriveActorTrades(
  *
  * Синтетический выход исключён намеренно: он валюация, а не реализация. Леджер его не видел, и
  * включение сдвинуло бы равенство на весь нереализованный PnL.
+ */
+/**
+ * КАНОНИЧЕСКАЯ величина для сверки с `Ledger.realizedPnl` — совпадает ПОБИТОВО, по построению.
+ *
+ * Почему понадобилась отдельная операция, хотя ниже уже есть тождество. Тождество ниже верно
+ * МАТЕМАТИЧЕСКИ и неверно ПОБИТОВО: сделка и леджер лежат на разных решётках округления, и
+ * различий там три, каждое — сознательное решение, а не недосмотр:
+ *
+ *   1. `grossOnClose` считает во float64 (E3, «две операции над входами, цепочки нет»), а леджер
+ *      берёт ту же разность внутри ОДНОГО десятичного выражения `accrueRealized`;
+ *   2. комиссия входа у сделки апорционируется (`portionOf`/`mul`) и выходит во float64 ДВАЖДЫ —
+ *      в `entryFeeClosed` и в остатке эры. Математически они сокращаются, побитово — нет;
+ *   3. леджер округляет на КАЖДОМ филле, а сумма сделок — на каждой сделке; при трёх и более
+ *      записях это разные лестницы даже при одинаковых слагаемых.
+ *
+ * Отсюда правило: сверять экономику допуском НЕЛЬЗЯ (допуск прячет ровно тот класс дефекта, ради
+ * которого сверка существует), а сравнивать разные решётки бессмысленно. Значит нужна ОДНА
+ * операция, лежащая на решётке леджера, — она здесь.
+ *
+ * Тавтологией это не является. Величина собрана из МОДЕЛИ ЭР деривации: цена входа эры, размер
+ * закрываемой доли, границы эр и порядок записей приходят отсюда, а не из леджера. Ошибись
+ * деривация в том, где началась эра или по какой цене вошли, — разойдётся и это число.
+ */
+export function canonicalRealizedPnl(derivation: ActorTradeDerivation): number {
+  return derivation.ledgerOrderRealizedPnl;
+}
+
+/**
+ * Сводка АРТЕФАКТНЫХ величин сделок по legacy-соглашению о комиссии.
+ *
+ * Верна математически и НЕ ПОБИТОВА относительно `Ledger.realizedPnl` — три причины перечислены в
+ * doc `canonicalRealizedPnl` выше. Для гейта сверки берите ЕЁ, а эту величину — для отчётов, где
+ * важно, что сумма сделок объясняет результат прогона.
  */
 export function reconcileRealizedPnl(derivation: ActorTradeDerivation): number {
   let acc = 0;
