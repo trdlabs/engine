@@ -140,3 +140,50 @@ describe('инвариант держится на разнородных вхо
     expect(shiftBps(BASE, 0, 1)).toBe(BASE);
   });
 });
+
+describe('цена исполнения возвращается ОТТУДА ЖЕ, где посчитаны размер и деньги', () => {
+  // Пока её не было, хост писал цену в филл отдельным вызовом `shiftBps(base, bps, dir)` — то есть
+  // повторял три параметра ещё раз, и ничто не мешало повторить их ИНАЧЕ. Запись прогона называла бы
+  // одну цену, а деньги считались бы по другой, и расхождение выглядело бы как проскальзывание.
+
+  it('покупка: цена ВЫШЕ базы и равна сдвигу теми же параметрами', () => {
+    const r = executeFill(NOTIONAL, BASE, SLIP, 1, null, FEE_BPS);
+    expect(r.executionPrice).toBeGreaterThan(BASE);
+    expect(r.executionPrice).toBe(shiftBps(BASE, SLIP, 1));
+    // И это НЕ цена противоположного направления — мутация знака ловится здесь.
+    expect(r.executionPrice).not.toBe(shiftBps(BASE, SLIP, -1));
+  });
+
+  it('продажа: цена НИЖЕ базы и равна сдвигу теми же параметрами', () => {
+    const r = executeFill(NOTIONAL, BASE, SLIP, -1, null, FEE_BPS);
+    expect(r.executionPrice).toBeLessThan(BASE);
+    expect(r.executionPrice).toBe(shiftBps(BASE, SLIP, -1));
+    expect(r.executionPrice).not.toBe(shiftBps(BASE, SLIP, 1));
+  });
+
+  it('ненулевой slippage ДЕЙСТВИТЕЛЬНО сдвигает — цена не равна базе', () => {
+    // Иначе «равна сдвигу» зеленело бы у реализации, возвращающей базу и игнорирующей bps.
+    expect(executeFill(NOTIONAL, BASE, SLIP, 1, null, FEE_BPS).executionPrice).not.toBe(BASE);
+    expect(executeFill(NOTIONAL, BASE, SLIP, -1, null, FEE_BPS).executionPrice).not.toBe(BASE);
+    // При нулевом — равна: сдвиг применяется ровно тогда, когда его просят.
+    expect(executeFill(NOTIONAL, BASE, 0, 1, null, FEE_BPS).executionPrice).toBe(BASE);
+  });
+
+  it('размер и деньги посчитаны ПО НЕЙ ЖЕ — на полном и на клампнутом пути', () => {
+    // Связь проверяется через величину, которую цена определяет однозначно: запрошенный нотионал,
+    // делённый на цену исполнения, даёт исполненный размер. Сравнение с допуском намеренно —
+    // деление внутри идёт по НЕокруглённой цене, и точного равенства здесь быть не может.
+    const full = executeFill(NOTIONAL, BASE, SLIP, 1, null, FEE_BPS);
+    expect(NOTIONAL / full.executionPrice).toBeCloseTo(full.filledSize, 9);
+
+    const clamped = executeFill(NOTIONAL, BASE, SLIP, -1, 3.71, FEE_BPS);
+    expect(clamped.clamped).toBe(true);
+    expect(clamped.filledSize * clamped.executionPrice).toBeCloseTo(clamped.filledNotional, 9);
+  });
+
+  it('цена приходит на ОБОИХ путях — клампнутый её тоже несёт', () => {
+    const clamped = executeFill(NOTIONAL, BASE, SLIP, 1, 0.001, FEE_BPS);
+    expect(clamped.clamped).toBe(true);
+    expect(clamped.executionPrice).toBe(shiftBps(BASE, SLIP, 1));
+  });
+});
