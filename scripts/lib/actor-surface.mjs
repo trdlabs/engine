@@ -24,6 +24,9 @@ export const ACTOR_SURFACE = [
   // только во второй фазе. Обе половины обязаны быть в поверхности — потребитель, у которого есть
   // одна, вынужден выдумывать то, что даёт другая.
   'matchBar', 'isEligibleForBar', 'shiftBps', 'sizeAtShiftedPrice',
+  // Исполнение — ОДНОЙ операцией: размер, нотионал, комиссия и факт клампа. Набор примитивов
+  // вместо неё оставлял потребителю программу из трёх решений.
+  'executeFill',
   'createCheckpointableRng', 'rngStateFromSeed', 'isRngState',
   'restore', 'replaceAuthorState', 'validateAuthorState',
   'createActorHost', 'CheckpointBoundaryViolation',
