@@ -20,7 +20,10 @@ export const ACTOR_SURFACE = [
   'openFrontierTimers', 'scheduleTimer', 'cancelTimer',
   'applyFill', 'applyFunding', 'positionView', 'fillsCausedBy', 'EMPTY_LEDGER',
   'transition', 'cancelRejected', 'isTerminal', 'checkCommandCount', 'checkDispatchDuration',
-  'matchBar', 'isEligibleForBar',
+  // Матчинг двухфазен: `matchBar` отвечает «какая заявка и по какой цене», размер появляется
+  // только во второй фазе. Обе половины обязаны быть в поверхности — потребитель, у которого есть
+  // одна, вынужден выдумывать то, что даёт другая.
+  'matchBar', 'isEligibleForBar', 'shiftBps', 'sizeAtShiftedPrice',
   'createCheckpointableRng', 'rngStateFromSeed', 'isRngState',
   'restore', 'replaceAuthorState', 'validateAuthorState',
   'createActorHost', 'CheckpointBoundaryViolation',

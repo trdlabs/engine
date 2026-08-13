@@ -302,7 +302,9 @@ export function runFrontiers(
           fillId: `f${e.seq}`,
           tsUs: b.tsUs,
           price: match.price,
-          qty: match.qty,
+          // Размер — ФИКСТУРНЫЙ, а не результат матчинга: `Match` его больше не несёт (двухфазный
+          // API, см. шапку `sim-exchange.ts`). Единица здесь держит голдены неподвижными.
+          qty: 1,
           side: 'buy',
           fee: 0.01,
           causedBy: match.orderId,

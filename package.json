@@ -1,6 +1,6 @@
 {
   "name": "@trdlabs/engine",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "One deterministic execution core (decision → risk → pending order → fill → portfolio → canonical trace) shared by backtester and platform.",
   "license": "Apache-2.0",
   "repository": {
@@ -40,7 +40,7 @@
     "verify:published": "node scripts/verify-published.mjs"
   },
   "dependencies": {
-    "@trdlabs/sdk": "0.18.0",
+    "@trdlabs/sdk": "0.19.0",
     "decimal.js": "10.4.3"
   },
   "devDependencies": {
