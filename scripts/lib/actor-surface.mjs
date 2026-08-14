@@ -103,23 +103,35 @@ export const DERIVATION_SMOKE = `
     if (filled.executionPrice === 100) throw new Error('проскальзывание не применено к цене исполнения');
     if (filled.filledNotional !== 1000) throw new Error('полный филл не сохранил запрошенный нотионал');
     if (filled.fee !== 0.7) throw new Error('комиссия не доля опубликованного нотионала: ' + filled.fee);
-    const clampedFill = engine.executeFill(1000, 100, 50, 1, 0.5, 7);
+    // Покупка сокращает ШОРТ: знак остатка отрицательный. Матрица знака — часть контракта операции,
+    // и смоук проверяет её ровно так же, как её обязан применять потребитель (0.17.0).
+    const clampedFill = engine.executeFill(1000, 100, 50, 1, { signedPositionQty: -0.5 }, 7);
     if (!clampedFill.clamped || clampedFill.filledSize !== 0.5) throw new Error('кламп не сработал');
     if (clampedFill.executionPrice !== filled.executionPrice) {
       throw new Error('клампнутый путь отдал другую цену исполнения');
     }
-    // Исход РАЗЛИЧИМ (0.16.0): сокращать нечего — заявка снимается, а не исполняется на ноль.
-    // Проверяется по тарболлу, потому что нулевой филл у потребителя доезжает до applyFill и
-    // роняет прогон броском, а не выглядит как отсутствие исполнения.
+    // Исход РАЗЛИЧИМ: сокращать нечего либо заявка нарастила бы позицию — это РАЗНЫЕ состояния и
+    // разные слова. Проверяется по тарболлу, потому что нулевой филл у потребителя доезжает до
+    // applyFill и роняет прогон броском, а не выглядит как отсутствие исполнения.
     if (filled.kind !== 'filled' || clampedFill.kind !== 'filled') {
       throw new Error('исход исполнения не размечен видом');
     }
-    const flat = engine.executeFill(1000, 100, 50, 1, 0, 7);
+    const flat = engine.executeFill(1000, 100, 50, 1, { signedPositionQty: 0 }, 7);
     if (flat.kind !== 'canceled' || flat.reason !== 'reduce_only_flat') {
-      throw new Error('нулевой остаток не дал снятия: ' + JSON.stringify(flat));
+      throw new Error('нулевой остаток не дал снятия flat: ' + JSON.stringify(flat));
     }
-    if ('filledSize' in flat) throw new Error('снятие принесло размер, которого у него быть не может');
-    let negative = false;
-    try { engine.executeFill(1000, 100, 50, 1, -1, 7); } catch { negative = true; }
-    if (!negative) throw new Error('принят отрицательный остаток позиции');
+    // Позиция ЕСТЬ, но на стороне заявки: исполнение нарастило бы её. Схлопывание этого случая во
+    // flat сообщало бы автору «позиции нет» там, где позиция есть и она противоположна ожиданию.
+    const wouldIncrease = engine.executeFill(1000, 100, 50, 1, { signedPositionQty: 2 }, 7);
+    if (wouldIncrease.kind !== 'canceled' || wouldIncrease.reason !== 'reduce_only_would_increase') {
+      throw new Error('позиция на стороне заявки не дала своего слова: ' + JSON.stringify(wouldIncrease));
+    }
+    // ЗАКРЫТАЯ ФОРМА снятия: ни размера, ни денег — их у него не бывает.
+    for (const c of [flat, wouldIncrease]) {
+      const keys = Object.keys(c).sort().join(',');
+      if (keys !== 'kind,reason') throw new Error('форма снятия не закрыта: ' + keys);
+    }
+    let nonFinite = false;
+    try { engine.executeFill(1000, 100, 50, 1, { signedPositionQty: Number.NaN }, 7); } catch { nonFinite = true; }
+    if (!nonFinite) throw new Error('принят не-конечный остаток позиции');
 `;
