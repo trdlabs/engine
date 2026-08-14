@@ -152,6 +152,7 @@ export {
   type CanceledExecution,
   type ExecutedFill,
   type FillOutcome,
+  type ReduceOnlyContext,
 } from './core/money.js';
 
 export {
