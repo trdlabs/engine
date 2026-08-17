@@ -104,7 +104,7 @@ export const DERIVATION_SMOKE = `
     if (filled.filledNotional !== 1000) throw new Error('полный филл не сохранил запрошенный нотионал');
     if (filled.fee !== 0.7) throw new Error('комиссия не доля опубликованного нотионала: ' + filled.fee);
     // Покупка сокращает ШОРТ: знак остатка отрицательный. Матрица знака — часть контракта операции,
-    // и смоук проверяет её ровно так же, как её обязан применять потребитель (0.17.0).
+    // и смоук проверяет её ровно так же, как её обязан применять потребитель (введена в 0.17.0).
     const clampedFill = engine.executeFill(1000, 100, 50, 1, { signedPositionQty: -0.5 }, 7);
     if (!clampedFill.clamped || clampedFill.filledSize !== 0.5) throw new Error('кламп не сработал');
     if (clampedFill.executionPrice !== filled.executionPrice) {
