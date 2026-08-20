@@ -1,31 +1,3 @@
-<!-- gortex:communities:start -->
-<!-- gortex:skills:start -->
-## Community Skills
-
-| Area | Description | Skill |
-|------|-------------|-------|
-| Core 1 Dirs Simulate | 82 symbols | `/gortex-core-1-dirs-simulate` |
-| Contract 2 Dirs Evaluate | 40 symbols | `/gortex-contract-2-dirs-evaluate` |
-| Core 1 Dirs Executionsimulator | 36 symbols | `/gortex-core-1-dirs-executionsimulator` |
-| 5 Dirs | 34 symbols | `/gortex-5-dirs` |
-| Core 1 Dirs Settlepending | 31 symbols | `/gortex-core-1-dirs-settlepending` |
-| Core 1 Dirs Closeposition | 30 symbols | `/gortex-core-1-dirs-closeposition` |
-| Core Detectprotection | 25 symbols | `/gortex-core-detectprotection` |
-| Core Portfolio | 24 symbols | `/gortex-core-portfolio` |
-| Contract 2 Dirs Strategydecision | 20 symbols | `/gortex-contract-2-dirs-strategydecision` |
-| Core Evaluateadd | 17 symbols | `/gortex-core-evaluateadd` |
-| 1 Dirs Sma Cross Onbarclose | 16 symbols | `/gortex-1-dirs-sma-cross-onbarclose` |
-| Core 1 Dirs Canonicaltrace | 11 symbols | `/gortex-core-1-dirs-canonicaltrace` |
-| Core Computebarfunding | 8 symbols | `/gortex-core-computebarfunding` |
-| Core Grossatsize | 8 symbols | `/gortex-core-grossatsize` |
-| 1 Dirs Quantizetostring | 7 symbols | `/gortex-1-dirs-quantizetostring` |
-| Core 1 Dirs Request | 7 symbols | `/gortex-core-1-dirs-request` |
-| Determinism Contentref | 4 symbols | `/gortex-determinism-contentref` |
-| Determinism Createseededrng | 4 symbols | `/gortex-determinism-createseededrng` |
-| Reality | 3 symbols | `/gortex-reality` |
-<!-- gortex:skills:end -->
-
-<!-- gortex:communities:end -->
 
 <!-- Перенесено из CLAUDE.md 2026-08-20 при сведении инструкций в один файл.
      Держать ВНЕ маркеров gortex:*, иначе `gortex init` затрёт. -->
@@ -59,4 +31,3 @@ These are not suggestions — run each step at the trigger.
 6. Before changing any function signature, **call** `verify_change` to catch broken callers and interface implementors (cross-repo).
 7. For any refactor, **call** `get_edit_plan` then `batch_edit` to apply atomically.
 8. Verify with the project's real build/test. Reserve `check_guards` for guard-relevant changes and `get_test_targets` to find the tests covering a substantive change — not mechanically after every edit.
-
